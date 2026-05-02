@@ -1,0 +1,96 @@
+# oxideav-generator
+
+Pure-Rust synthetic media generator for the oxideav framework. Provides
+audio synth (sine / square / triangle / sawtooth / Karplus-Strong pluck /
+white-pink-brown noise / silence), image basics (solid colour, linear /
+radial gradient, checkerboard, horizontal / vertical stripes), procedural
+imagery (Mandelbrot + Julia fractals, plasma, Perlin noise), and video
+(ffmpeg-style `testsrc`, SMPTE colour bars, animated Mandelbrot zoom,
+hue-rotating gradient).
+
+Two integration shapes are exposed:
+
+1. **Source driver** — `generate://...` URIs, registered through the
+   standard `SourceRegistry`. Opening one returns an in-memory reader
+   whose contents are a real container (WAV for audio, PNG for still
+   images) that the existing demuxer chain consumes verbatim.
+2. **Zero-input filter** — every generator is also exposed as a
+   `StreamFilter` factory (`audio.synth`, `image.xc`, …,
+   `video.testsrc`, …) that emits frames in `flush()` without any
+   upstream input.
+
+Dependency-only on `oxideav-core` and `serde_json` — no `image`, no
+`png`, no `wav` crate, no `rand`. WAV / PNG / Adler32 / CRC32 / LCG /
+Perlin / diamond-square are all hand-rolled in tree.
+
+## URI catalogue
+
+```
+generate://synth?type=sine&freq=440&duration=5
+generate://synth?type=square&freq=220&duration=2&amplitude=0.5
+generate://synth?type=pluck&freq=440&decay=0.99&duration=3
+generate://synth?type=noise&color=pink&duration=10
+
+generate://xc?color=red&w=640&h=480
+generate://xc?color=%23ff0000      # #ff0000 percent-encoded
+generate://gradient?w=640&h=480&from=red&to=blue&direction=horizontal
+generate://gradient?w=640&h=480&from=red&to=blue&type=radial
+generate://pattern?type=checkerboard&w=640&h=480&size=32
+generate://fractal?type=mandelbrot&w=640&h=480&cx=-0.5&cy=0&zoom=2&iter=256
+generate://fractal?type=julia&w=640&h=480&cx=-0.7&cy=0.27&iter=256
+generate://plasma?w=640&h=480&seed=42
+generate://noise?type=perlin&w=640&h=480&scale=64&seed=42
+```
+
+## CLI shorthands (convert verb only)
+
+The convert verb's arg parser runs every input through
+`oxideav_generator::shorthand::translate` before reaching the source
+registry. Recognised prefixes:
+
+| Shorthand              | Canonical                                                    |
+| ---------------------- | ------------------------------------------------------------ |
+| `xc:red`               | `generate://xc?color=red`                                    |
+| `xc:#ff0000`           | `generate://xc?color=%23ff0000`                              |
+| `pattern:checkerboard` | `generate://pattern?type=checkerboard`                       |
+| `gradient:red-blue`    | `generate://gradient?from=red&to=blue`                       |
+| `radial:red-blue`      | `generate://gradient?type=radial&from=red&to=blue`           |
+| `plasma:`              | `generate://plasma`                                          |
+| `mandelbrot:`          | `generate://fractal?type=mandelbrot`                         |
+| `julia:`               | `generate://fractal?type=julia`                              |
+| `synth:5,sine,440`     | `generate://synth?duration=5&type=sine&freq=440`             |
+| `testsrc:`             | `generate://testsrc`                                         |
+| `smptebars:`           | `generate://smptebars`                                       |
+| `noise:perlin`         | `generate://noise?type=perlin`                               |
+
+`probe` / `transcode` / `remux` / `run` accept the canonical
+`generate://` URI form only — they don't expand shorthands.
+
+## Wiring
+
+```rust,ignore
+use oxideav_core::{RuntimeContext, SourceRegistry};
+
+let mut ctx = RuntimeContext::new();
+oxideav_source::register(&mut ctx);                      // file://
+oxideav_generator::register_source(&mut ctx.sources);    // generate://
+oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.xc, ...
+```
+
+## Status
+
+Round 1: audio basics + image basics + procedural images + video
+generators all landed. The video URI source path returns a clear
+"unsupported until we add a Y4M demuxer" error; video generators are
+fully usable through the filter API in JSON pipelines.
+
+## CSS colour parser
+
+Hand-rolled. Accepts a curated subset of the CSS/HTML4 named colours
+plus `#RGB`, `#RGBA`, `#RRGGBB`, and `#RRGGBBAA`.
+
+## Determinism
+
+All randomness is seeded — every generator that takes a `seed=` query
+parameter is bit-deterministic across builds. Defaults: `seed=42` for
+plasma / Perlin, `seed=0x12345678` for white / pink / brown noise.

@@ -1,0 +1,18 @@
+[package]
+name = "oxideav-generator"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/OxideAV/oxideav-generator"
+authors = ["Mark Karpeles"]
+description = "Pure-Rust synthetic media generator (sine waves, gradients, fractals, test patterns) for the oxideav framework — usable as a generate:// URI source or as a zero-input filter"
+
+readme = "README.md"
+homepage = "https://github.com/OxideAV/oxideav-generator"
+keywords = ["multimedia", "synthesis", "testpatterns", "fractal", "pure-rust"]
+categories = ["multimedia"]
+
+[dependencies]
+oxideav-core = "0.1"
+serde_json = "1"
