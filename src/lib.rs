@@ -4,9 +4,9 @@
 //!
 //! 1. **Source driver** — `generate://...` URIs. Register via
 //!    [`register_source`] on a [`SourceRegistry`]. Opening a generate URI
-//!    returns an in-memory [`ReadSeek`](oxideav_core::ReadSeek) whose
-//!    bytes are a real container (WAV for audio, PNG for still images)
-//!    that the existing demuxer chain consumes unchanged.
+//!    returns a [`SourceOutput::Frames`](oxideav_core::SourceOutput)
+//!    handle (`Box<dyn FrameSource>`) — frames are produced natively;
+//!    no container or decoder runs in front of them.
 //!
 //! 2. **Zero-input filter** — every generator is also exposed as a
 //!    [`StreamFilter`](oxideav_core::StreamFilter) factory under the
@@ -49,4 +49,4 @@ pub mod video;
 mod filters;
 
 pub use filters::register_filters;
-pub use source::{open_generate, register_source};
+pub use source::{open_generate_frames, register_source};

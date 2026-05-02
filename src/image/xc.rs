@@ -5,14 +5,8 @@ use std::collections::BTreeMap;
 use oxideav_core::Result;
 
 use super::palette::parse_color;
-use super::{png_encode, Rgba8Image};
+use super::Rgba8Image;
 use crate::source::{q_str, q_u32};
-
-/// `generate://xc?color=red&w=640&h=480` → PNG bytes.
-pub fn generate(query: &BTreeMap<String, String>) -> Result<Vec<u8>> {
-    let img = render(query)?;
-    Ok(png_encode(&img))
-}
 
 pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
     let w = q_u32(query, "w", 640)?.max(1);
@@ -51,15 +45,5 @@ mod tests {
     fn xc_hex_with_alpha() {
         let img = render(&map(&[("color", "#80808080"), ("w", "10"), ("h", "10")])).unwrap();
         assert_eq!(img.get(5, 5), [128, 128, 128, 128]);
-    }
-
-    #[test]
-    fn xc_emits_valid_png() {
-        let bytes = generate(&map(&[("color", "blue"), ("w", "8"), ("h", "8")])).unwrap();
-        // PNG signature
-        assert_eq!(
-            &bytes[0..8],
-            &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']
-        );
     }
 }

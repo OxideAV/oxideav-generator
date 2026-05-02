@@ -15,8 +15,8 @@ use oxideav_core::{
 };
 use serde_json::Value;
 
+use crate::audio::f32_sample_to_i16;
 use crate::audio::synth as audio_synth;
-use crate::audio::wav::f32_sample_to_i16;
 use crate::image::{fractal, gradient, noise, pattern, plasma, xc, Rgba8Image};
 use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc};
 

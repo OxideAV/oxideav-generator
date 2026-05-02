@@ -1,11 +1,13 @@
 //! Video generators (testsrc / smptebars / fractal_zoom /
 //! gradient_animate).
 //!
-//! Each generator emits an iterator of RGBA8 frames with a known
-//! `(width, height, fps, duration_s)`. The filter-side wrapper turns
-//! these into [`VideoFrame`](oxideav_core::VideoFrame) values for the
-//! pipeline; the URI source side is wired into Y4M but currently
-//! returns `Unsupported` because no Y4M demuxer is in tree.
+//! Each generator emits a precomputed [`FrameSeq`] of RGBA8 frames
+//! with a known `(width, height, fps, duration_s)`. Both the URI
+//! [`FrameSource`](oxideav_core::FrameSource) wrapper and the
+//! zero-input filter wrapper turn these into
+//! [`VideoFrame`](oxideav_core::VideoFrame) values for the pipeline —
+//! no container layer (Y4M / PNG / etc.) is involved on the source
+//! path.
 
 pub mod fractal_zoom;
 pub mod gradient_animate;

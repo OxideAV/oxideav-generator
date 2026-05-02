@@ -5,15 +5,8 @@ use std::collections::BTreeMap;
 use oxideav_core::{Error, Result};
 
 use super::palette::parse_color;
-use super::{png_encode, Rgba8Image};
+use super::Rgba8Image;
 use crate::source::{q_str, q_u32};
-
-/// `generate://pattern?type=checkerboard&w=…&h=…&size=32&color1=black&color2=white` →
-/// PNG bytes.
-pub fn generate(query: &BTreeMap<String, String>) -> Result<Vec<u8>> {
-    let img = render(query)?;
-    Ok(png_encode(&img))
-}
 
 pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
     let w = q_u32(query, "w", 640)?.max(1);

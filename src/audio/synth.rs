@@ -1,15 +1,15 @@
 //! Audio oscillators + noise + silence + Karplus-Strong pluck.
 //!
 //! Every public `*_samples` function returns a normalised f32 buffer
-//! interleaved across channels. [`generate`] is the URI dispatcher
-//! that wraps the chosen synth in canonical 16-bit WAV bytes.
+//! interleaved across channels. [`render`] is the URI / filter
+//! dispatcher; both transports consume the resulting [`AudioBuffer`]
+//! directly (no intermediate container).
 
 use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
 use oxideav_core::{Error, Result};
 
-use super::wav::{encode_pcm16, f32_to_i16};
 use crate::source::{q_f64, q_str, q_u32};
 
 /// `f32` samples produced by a synth, plus the rate/channels they came
@@ -21,16 +21,12 @@ pub struct AudioBuffer {
     pub sample_rate: u32,
 }
 
-/// Top-level dispatcher used by `generate://synth?…`.
-pub fn generate(query: &BTreeMap<String, String>) -> Result<Vec<u8>> {
-    let buf = render(query)?;
-    let pcm = f32_to_i16(&buf.samples);
-    encode_pcm16(&pcm, buf.channels, buf.sample_rate)
-}
-
-/// Render the synth into an [`AudioBuffer`] without WAV-encoding it.
-/// Useful for the zero-input filter path that emits `AudioFrame`s
-/// directly.
+/// Render the synth into an [`AudioBuffer`].
+///
+/// Both the URI path (which wraps the buffer in an
+/// [`AudioFrame`](oxideav_core::AudioFrame) inside a
+/// [`FrameSource`](oxideav_core::FrameSource)) and the zero-input
+/// filter path consume this directly.
 pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
     let kind = q_str(query, "type", "sine");
     let sample_rate = q_u32(query, "rate", 8_000)?.max(1);

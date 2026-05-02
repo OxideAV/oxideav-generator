@@ -1,8 +1,10 @@
 //! Image generators (xc / gradient / pattern / fractal / plasma /
-//! noise) plus a tiny in-tree PNG encoder.
+//! noise).
 //!
-//! Each generator returns RGBA8 row-major bytes via [`Rgba8Image`];
-//! [`png_encode`] turns that into a standalone PNG byte stream.
+//! Each generator returns RGBA8 row-major bytes via [`Rgba8Image`].
+//! Frames flow straight to the pipeline as
+//! [`SourceOutput::Frames`](oxideav_core::SourceOutput::Frames); no
+//! container layer (PNG / Y4M / WAV) is involved on the source path.
 
 pub mod fractal;
 pub mod gradient;
@@ -10,7 +12,6 @@ pub mod noise;
 pub mod palette;
 pub mod pattern;
 pub mod plasma;
-pub mod png;
 pub mod xc;
 
 /// Row-major RGBA8 image — 4 bytes per pixel, `width * height * 4`
@@ -44,5 +45,3 @@ impl Rgba8Image {
         [s[0], s[1], s[2], s[3]]
     }
 }
-
-pub use png::encode as png_encode;

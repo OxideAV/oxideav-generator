@@ -2,60 +2,280 @@
 //!
 //! Parses a query-string-shaped URI like
 //! `generate://synth?type=sine&freq=440&duration=5`, dispatches to the
-//! matching generator, and returns the resulting bytes wrapped in an
-//! `std::io::Cursor` (which already implements
-//! [`ReadSeek`](oxideav_core::ReadSeek)).
+//! matching generator, and returns it as a
+//! [`FrameSource`](oxideav_core::FrameSource) — frames are produced
+//! natively (audio: one [`AudioFrame`](oxideav_core::AudioFrame) per
+//! call until the configured duration is exhausted; image: a single
+//! still [`VideoFrame`](oxideav_core::VideoFrame) followed by `Eof`;
+//! video: one [`VideoFrame`](oxideav_core::VideoFrame) per call until
+//! the configured frame count is exhausted).
+//!
+//! No container layer is involved — the executor consumes
+//! [`SourceOutput::Frames`](oxideav_core::SourceOutput::Frames)
+//! directly, skipping both demux + decode for synthetic sources.
 
 use std::collections::BTreeMap;
-use std::io::Cursor;
 
-use oxideav_core::{Error, ReadSeek, Result, SourceRegistry};
+use oxideav_core::{
+    AudioFrame, ChannelLayout, CodecId, CodecParameters, Error, Frame, FrameSource, PixelFormat,
+    Rational, Result, SampleFormat, SourceRegistry, VideoFrame, VideoPlane,
+};
 
 use crate::audio::synth as audio_synth;
-use crate::image::{fractal, gradient, noise, pattern, plasma, xc};
+use crate::image::{fractal, gradient, noise, pattern, plasma, xc, Rgba8Image};
+use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc, FrameSeq};
 
-/// Register the `generate` URI scheme.
+/// Register the `generate` URI scheme as a [`FrameSource`] driver.
 pub fn register_source(registry: &mut SourceRegistry) {
-    registry.register("generate", open_generate);
+    registry.register_frames("generate", open_generate_frames);
 }
 
-/// Opener for `generate://...` URIs.
-pub fn open_generate(uri: &str) -> Result<Box<dyn ReadSeek>> {
+/// Opener for `generate://...` URIs. Parses the URI, dispatches to the
+/// matching generator, and returns a boxed [`FrameSource`].
+pub fn open_generate_frames(uri: &str) -> Result<Box<dyn FrameSource>> {
     let parsed = ParsedUri::parse(uri)?;
-    let bytes = match parsed.kind.as_str() {
+    match parsed.kind.as_str() {
         // Audio
-        "synth" => audio_synth::generate(&parsed.query)?,
-
-        // Image basics
-        "xc" => xc::generate(&parsed.query)?,
-        "gradient" => gradient::generate(&parsed.query)?,
-        "pattern" => pattern::generate(&parsed.query)?,
-
-        // Procedural images
-        "fractal" => fractal::generate(&parsed.query)?,
-        "plasma" => plasma::generate(&parsed.query)?,
-        "noise" => noise::generate(&parsed.query)?,
-
-        // Video — Y4M emission is implemented in `crate::video::*` but the
-        // workspace doesn't yet ship a Y4M demuxer, so we fail loudly with
-        // a helpful pointer to the filter API.
-        "testsrc" | "smptebars" | "fractal_zoom" | "gradient_animate" => {
-            return Err(Error::Unsupported(format!(
-                "generate://{}: video sources via URI are not yet wired up \
-                 (no Y4M demuxer in tree). Use the zero-input filter API \
-                 (e.g. video.{}) inside a JSON pipeline instead.",
-                parsed.kind, parsed.kind
-            )));
+        "synth" => {
+            let buf = audio_synth::render(&parsed.query)?;
+            Ok(Box::new(AudioFrameSource::new(buf)))
         }
 
-        other => {
-            return Err(Error::Unsupported(format!(
-                "generate://{other}: unknown generator kind"
-            )));
-        }
-    };
-    Ok(Box::new(Cursor::new(bytes)))
+        // Image basics — one static frame.
+        "xc" => Ok(Box::new(SingleImageFrameSource::new(xc::render(
+            &parsed.query,
+        )?))),
+        "gradient" => Ok(Box::new(SingleImageFrameSource::new(gradient::render(
+            &parsed.query,
+        )?))),
+        "pattern" => Ok(Box::new(SingleImageFrameSource::new(pattern::render(
+            &parsed.query,
+        )?))),
+
+        // Procedural images — one static frame.
+        "fractal" => Ok(Box::new(SingleImageFrameSource::new(fractal::render(
+            &parsed.query,
+        )?))),
+        "plasma" => Ok(Box::new(SingleImageFrameSource::new(plasma::render(
+            &parsed.query,
+        )?))),
+        "noise" => Ok(Box::new(SingleImageFrameSource::new(noise::render(
+            &parsed.query,
+        )?))),
+
+        // Video — full frame sequences. Y4M is no longer in the loop;
+        // frames flow straight into the pipeline as Frames-shape source
+        // output.
+        "testsrc" => Ok(Box::new(VideoFrameSourceImpl::new(testsrc::render(
+            &parsed.query,
+        )?))),
+        "smptebars" => Ok(Box::new(VideoFrameSourceImpl::new(smptebars::render(
+            &parsed.query,
+        )?))),
+        "fractal_zoom" => Ok(Box::new(VideoFrameSourceImpl::new(fractal_zoom::render(
+            &parsed.query,
+        )?))),
+        "gradient_animate" => Ok(Box::new(VideoFrameSourceImpl::new(
+            gradient_animate::render(&parsed.query)?,
+        ))),
+
+        other => Err(Error::Unsupported(format!(
+            "generate://{other}: unknown generator kind"
+        ))),
+    }
 }
+
+// ───────────────────────── Audio FrameSource ─────────────────────────
+
+/// [`FrameSource`] for `generate://synth?...`. Emits one
+/// [`AudioFrame`] containing the entire rendered buffer interleaved as
+/// signed 16-bit little-endian PCM, then `Eof`.
+struct AudioFrameSource {
+    params: CodecParameters,
+    /// `None` once the single frame has been emitted.
+    pending: Option<AudioFrame>,
+    duration_us: i64,
+}
+
+impl AudioFrameSource {
+    fn new(buf: audio_synth::AudioBuffer) -> Self {
+        let channels = buf.channels.max(1);
+        let sample_rate = buf.sample_rate.max(1);
+        let samples_per_channel = (buf.samples.len() / channels as usize) as u32;
+
+        // Convert f32 → interleaved S16 LE bytes.
+        let bytes = audio_buffer_to_s16le_bytes(&buf);
+
+        // CodecParameters: pcm_s16le, populated channels / sample_rate /
+        // sample_format / channel_layout.
+        let mut params = CodecParameters::audio(CodecId::new("pcm_s16le"))
+            .channels(channels)
+            .channel_layout(ChannelLayout::from_count(channels));
+        params.sample_rate = Some(sample_rate);
+        params.sample_format = Some(SampleFormat::S16);
+
+        // Duration in microseconds = samples / sample_rate * 1e6.
+        let duration_us = ((samples_per_channel as i64) * 1_000_000) / (sample_rate as i64).max(1);
+
+        let frame = AudioFrame {
+            samples: samples_per_channel,
+            pts: Some(0),
+            data: vec![bytes],
+        };
+
+        Self {
+            params,
+            pending: Some(frame),
+            duration_us,
+        }
+    }
+}
+
+impl FrameSource for AudioFrameSource {
+    fn params(&self) -> &CodecParameters {
+        &self.params
+    }
+    fn next_frame(&mut self) -> Result<Frame> {
+        match self.pending.take() {
+            Some(f) => Ok(Frame::Audio(f)),
+            None => Err(Error::Eof),
+        }
+    }
+    fn duration_micros(&self) -> Option<i64> {
+        Some(self.duration_us)
+    }
+}
+
+fn audio_buffer_to_s16le_bytes(buf: &audio_synth::AudioBuffer) -> Vec<u8> {
+    let mut out = Vec::with_capacity(buf.samples.len() * 2);
+    for &x in &buf.samples {
+        let s = crate::audio::f32_sample_to_i16(x);
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+// ───────────────────────── Single-image FrameSource ─────────────────────────
+
+/// [`FrameSource`] for the static image generators (`xc`, `gradient`,
+/// `pattern`, `fractal`, `plasma`, `noise`). Emits exactly one
+/// [`VideoFrame`] then `Eof`. Frame rate is set to 1/1 — these are
+/// still images.
+struct SingleImageFrameSource {
+    params: CodecParameters,
+    pending: Option<VideoFrame>,
+}
+
+impl SingleImageFrameSource {
+    fn new(img: Rgba8Image) -> Self {
+        let mut params = CodecParameters::video(CodecId::new("rawvideo"));
+        params.width = Some(img.width);
+        params.height = Some(img.height);
+        params.pixel_format = Some(PixelFormat::Rgba);
+        params.frame_rate = Some(Rational::new(1, 1));
+        let frame = rgba_image_to_video_frame(img, 0);
+        Self {
+            params,
+            pending: Some(frame),
+        }
+    }
+}
+
+impl FrameSource for SingleImageFrameSource {
+    fn params(&self) -> &CodecParameters {
+        &self.params
+    }
+    fn next_frame(&mut self) -> Result<Frame> {
+        match self.pending.take() {
+            Some(f) => Ok(Frame::Video(f)),
+            None => Err(Error::Eof),
+        }
+    }
+    fn duration_micros(&self) -> Option<i64> {
+        // One frame at 1 fps → 1 s.
+        Some(1_000_000)
+    }
+}
+
+// ───────────────────────── Multi-frame video FrameSource ─────────────────────────
+
+/// [`FrameSource`] for `testsrc` / `smptebars` / `fractal_zoom` /
+/// `gradient_animate`. Drains a precomputed [`FrameSeq`] one frame per
+/// `next_frame()` call.
+struct VideoFrameSourceImpl {
+    params: CodecParameters,
+    /// Iterator state: pop from the front of a pre-built deque-style
+    /// vector. We use `into_iter` on construction and store the iterator
+    /// behind a `std::vec::IntoIter` so we can take ownership without
+    /// re-allocating per frame.
+    frames: std::vec::IntoIter<Rgba8Image>,
+    pts_index: i64,
+    duration_us: i64,
+}
+
+impl VideoFrameSourceImpl {
+    fn new(seq: FrameSeq) -> Self {
+        let fps = seq.fps.max(1);
+        let (w, h) = seq
+            .frames
+            .first()
+            .map(|f| (f.width, f.height))
+            .unwrap_or((0, 0));
+        let n = seq.frames.len() as i64;
+
+        let mut params = CodecParameters::video(CodecId::new("rawvideo"));
+        params.width = Some(w);
+        params.height = Some(h);
+        params.pixel_format = Some(PixelFormat::Rgba);
+        params.frame_rate = Some(Rational::new(fps as i64, 1));
+
+        let duration_us = if fps > 0 {
+            (n * 1_000_000) / fps as i64
+        } else {
+            0
+        };
+
+        Self {
+            params,
+            frames: seq.frames.into_iter(),
+            pts_index: 0,
+            duration_us,
+        }
+    }
+}
+
+impl FrameSource for VideoFrameSourceImpl {
+    fn params(&self) -> &CodecParameters {
+        &self.params
+    }
+    fn next_frame(&mut self) -> Result<Frame> {
+        match self.frames.next() {
+            Some(img) => {
+                let pts = self.pts_index;
+                self.pts_index += 1;
+                Ok(Frame::Video(rgba_image_to_video_frame(img, pts)))
+            }
+            None => Err(Error::Eof),
+        }
+    }
+    fn duration_micros(&self) -> Option<i64> {
+        Some(self.duration_us)
+    }
+}
+
+// Shared helper — build a VideoFrame from an Rgba8Image at the given pts.
+fn rgba_image_to_video_frame(img: Rgba8Image, pts: i64) -> VideoFrame {
+    let stride = (img.width as usize) * 4;
+    VideoFrame {
+        pts: Some(pts),
+        planes: vec![VideoPlane {
+            stride,
+            data: img.pixels,
+        }],
+    }
+}
+
+// ───────────────────────── URI parser ─────────────────────────
 
 /// Parsed `generate://` URI.
 ///
@@ -184,6 +404,7 @@ pub fn q_str<'a>(q: &'a BTreeMap<String, String>, key: &str, default: &'a str) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxideav_core::MediaType;
 
     #[test]
     fn parse_simple() {
@@ -214,11 +435,104 @@ mod tests {
 
     #[test]
     fn unknown_kind_errors() {
-        let err = match open_generate("generate://nonsense") {
+        let err = match open_generate_frames("generate://nonsense") {
             Ok(_) => panic!("expected error"),
             Err(e) => e,
         };
         let msg = format!("{err}");
         assert!(msg.contains("nonsense"), "msg = {msg:?}");
+    }
+
+    #[test]
+    fn audio_synth_produces_one_audio_frame_then_eof() {
+        // 8000 Hz × 0.01 s = 80 samples mono.
+        let mut src =
+            open_generate_frames("generate://synth?type=sine&freq=440&duration=0.01&rate=8000")
+                .unwrap();
+        // Params: pcm_s16le, 1 channel, 8000 Hz, S16.
+        let p = src.params();
+        assert_eq!(p.media_type, MediaType::Audio);
+        assert_eq!(p.codec_id.as_str(), "pcm_s16le");
+        assert_eq!(p.sample_rate, Some(8000));
+        assert_eq!(p.channels, Some(1));
+        assert_eq!(p.sample_format, Some(SampleFormat::S16));
+
+        let frame = src.next_frame().unwrap();
+        match frame {
+            Frame::Audio(a) => {
+                assert_eq!(a.samples, 80);
+                assert_eq!(a.data.len(), 1);
+                assert_eq!(a.data[0].len(), 80 * 2);
+            }
+            other => panic!("expected audio, got {other:?}"),
+        }
+        assert!(matches!(src.next_frame(), Err(Error::Eof)));
+    }
+
+    #[test]
+    fn image_xc_produces_one_video_frame_then_eof() {
+        let mut src = open_generate_frames("generate://xc?color=red&w=4&h=4").unwrap();
+        let p = src.params();
+        assert_eq!(p.media_type, MediaType::Video);
+        assert_eq!(p.width, Some(4));
+        assert_eq!(p.height, Some(4));
+        assert_eq!(p.pixel_format, Some(PixelFormat::Rgba));
+
+        let frame = src.next_frame().unwrap();
+        match frame {
+            Frame::Video(v) => {
+                assert_eq!(v.planes.len(), 1);
+                assert_eq!(v.planes[0].stride, 16);
+                assert_eq!(v.planes[0].data.len(), 64);
+                // First pixel red.
+                assert_eq!(&v.planes[0].data[0..4], &[255, 0, 0, 255]);
+            }
+            other => panic!("expected video, got {other:?}"),
+        }
+        assert!(matches!(src.next_frame(), Err(Error::Eof)));
+    }
+
+    #[test]
+    fn video_testsrc_produces_n_frames_then_eof() {
+        // 0.2 s × 10 fps = 2 frames, 32×16.
+        let mut src =
+            open_generate_frames("generate://testsrc?w=32&h=16&duration=0.2&fps=10").unwrap();
+        let p = src.params();
+        assert_eq!(p.width, Some(32));
+        assert_eq!(p.height, Some(16));
+        assert_eq!(p.pixel_format, Some(PixelFormat::Rgba));
+        assert_eq!(p.frame_rate, Some(Rational::new(10, 1)));
+
+        let mut count = 0;
+        let mut last_pts = -1;
+        loop {
+            match src.next_frame() {
+                Ok(Frame::Video(v)) => {
+                    let pts = v.pts.unwrap();
+                    assert!(pts > last_pts, "monotonic pts");
+                    last_pts = pts;
+                    assert_eq!(v.planes[0].stride, 32 * 4);
+                    assert_eq!(v.planes[0].data.len(), 32 * 16 * 4);
+                    count += 1;
+                }
+                Err(Error::Eof) => break,
+                other => panic!("unexpected: {other:?}"),
+            }
+        }
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn video_smptebars_default_is_supported_via_uri() {
+        // Smoke test: smptebars used to bail with Unsupported; should now
+        // return a usable FrameSource even with default params.
+        let mut src =
+            open_generate_frames("generate://smptebars?w=8&h=8&duration=0.1&fps=10").unwrap();
+        let p = src.params();
+        assert_eq!(p.width, Some(8));
+        assert_eq!(p.height, Some(8));
+        // 0.1 s × 10 fps → 1 frame, then Eof.
+        assert!(matches!(src.next_frame(), Ok(Frame::Video(_))));
+        assert!(matches!(src.next_frame(), Err(Error::Eof)));
     }
 }

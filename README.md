@@ -11,17 +11,24 @@ hue-rotating gradient).
 Two integration shapes are exposed:
 
 1. **Source driver** — `generate://...` URIs, registered through the
-   standard `SourceRegistry`. Opening one returns an in-memory reader
-   whose contents are a real container (WAV for audio, PNG for still
-   images) that the existing demuxer chain consumes verbatim.
+   standard `SourceRegistry`. Opening one returns a
+   `SourceOutput::Frames` handle (`Box<dyn FrameSource>`) — frames are
+   produced natively (audio: one `AudioFrame` per call until the
+   configured duration is exhausted; image: a single still `VideoFrame`
+   followed by `Eof`; video: one `VideoFrame` per call until the
+   configured frame count is exhausted). Both audio and video URI
+   inputs are supported end-to-end; `generate://testsrc?…` no longer
+   bails with `Unsupported`.
 2. **Zero-input filter** — every generator is also exposed as a
    `StreamFilter` factory (`audio.synth`, `image.xc`, …,
    `video.testsrc`, …) that emits frames in `flush()` without any
    upstream input.
 
 Dependency-only on `oxideav-core` and `serde_json` — no `image`, no
-`png`, no `wav` crate, no `rand`. WAV / PNG / Adler32 / CRC32 / LCG /
-Perlin / diamond-square are all hand-rolled in tree.
+`png`, no `wav` crate, no `rand`. LCG / Perlin / diamond-square are all
+hand-rolled in tree. (Earlier rounds shipped hand-rolled WAV / PNG
+encoders for the byte-shaped URI path; those are gone now that the URI
+path produces frames natively.)
 
 ## URI catalogue
 
@@ -79,10 +86,18 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 
 ## Status
 
+Round 2 (2026-05-02): URI source path migrated to the new typed
+`SourceRegistry` `FrameSource` shape — every `generate://…` URI returns
+`SourceOutput::Frames` directly, and the round-1 video-bails-with-
+`Unsupported` gotcha is gone. Audio + image + video URIs all work
+end-to-end with no intermediate encode/decode round-trip; the
+hand-rolled WAV / PNG emitters that the bytes-shaped path required have
+been removed (they were internal-only — no public API change for the
+filter or shorthand surfaces). The filter API and CLI shorthand
+translator are unchanged.
+
 Round 1: audio basics + image basics + procedural images + video
-generators all landed. The video URI source path returns a clear
-"unsupported until we add a Y4M demuxer" error; video generators are
-fully usable through the filter API in JSON pipelines.
+generators all landed.
 
 ## CSS colour parser
 
