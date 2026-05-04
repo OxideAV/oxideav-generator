@@ -6,6 +6,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/OxideAV/oxideav-generator/compare/v0.1.1...v0.1.2) - 2026-05-04
+
+### Other
+
+- Delete Cargo.lock
+- construct VectorFrame field-by-field for crates.io compat
+- migrate to vector shape→raster pipeline ([#354](https://github.com/OxideAV/oxideav-generator/pull/354))
+- apply rustfmt to label.rs + source.rs
+- add label: text-to-image generator (scribe-backed)
+
 ### Changed — `label:` migrated to vector pipeline (#354)
 
 - The `label:text=...` generator no longer uses the removed
