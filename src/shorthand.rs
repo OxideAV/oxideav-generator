@@ -18,6 +18,7 @@
 //! | `testsrc:`               | `generate://testsrc`                            |
 //! | `smptebars:`             | `generate://smptebars`                          |
 //! | `noise:perlin`           | `generate://noise?type=perlin`                  |
+//! | `label:Hello world`      | `generate://label?text=Hello%20world`           |
 //!
 //! Inputs that don't start with a recognised prefix pass through
 //! unchanged — the source registry decides whether they're file paths,
@@ -91,6 +92,15 @@ fn try_translate(input: &str) -> Option<String> {
             return Some("generate://noise".to_string());
         }
         return Some(format!("generate://noise?type={}", encode(rest)));
+    }
+    if let Some(rest) = input.strip_prefix("label:") {
+        // Whole tail is the text — IM's `label:Hello, world!` includes
+        // the comma. Options like font/size/color come from the
+        // canonical query form (`generate://label?text=…&size=48`) or
+        // from sibling CLI flags in a follow-up; we don't try to parse
+        // a `,key=val` suffix here because that would conflict with
+        // text containing literal commas.
+        return Some(format!("generate://label?text={}", encode(rest)));
     }
     None
 }
@@ -266,6 +276,30 @@ mod tests {
     #[test]
     fn noise_perlin() {
         assert_eq!(translate("noise:perlin"), "generate://noise?type=perlin");
+    }
+
+    #[test]
+    fn label_simple_text() {
+        assert_eq!(
+            translate("label:Hello world"),
+            "generate://label?text=Hello%20world"
+        );
+    }
+
+    #[test]
+    fn label_with_comma_keeps_comma_in_text() {
+        // Comma is part of the label, not an option separator. Comma
+        // is in `encode()`'s unreserved set so it passes through; the
+        // important thing is that nothing splits the text on it.
+        assert_eq!(
+            translate("label:Hello, world!"),
+            "generate://label?text=Hello,%20world%21"
+        );
+    }
+
+    #[test]
+    fn label_empty_passes_empty_text() {
+        assert_eq!(translate("label:"), "generate://label?text=");
     }
 
     #[test]

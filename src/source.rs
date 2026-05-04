@@ -23,6 +23,8 @@ use oxideav_core::{
 
 use crate::audio::synth as audio_synth;
 use crate::image::{fractal, gradient, noise, pattern, plasma, xc, Rgba8Image};
+#[cfg(feature = "label")]
+use crate::image::label;
 use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc, FrameSeq};
 
 /// Register the `generate` URI scheme as a [`FrameSource`] driver.
@@ -51,6 +53,14 @@ pub fn open_generate_frames(uri: &str) -> Result<Box<dyn FrameSource>> {
         "pattern" => Ok(Box::new(SingleImageFrameSource::new(pattern::render(
             &parsed.query,
         )?))),
+        #[cfg(feature = "label")]
+        "label" => Ok(Box::new(SingleImageFrameSource::new(label::render(
+            &parsed.query,
+        )?))),
+        #[cfg(not(feature = "label"))]
+        "label" => Err(Error::Unsupported(
+            "generate://label: oxideav-generator was built without the `label` feature".into(),
+        )),
 
         // Procedural images — one static frame.
         "fractal" => Ok(Box::new(SingleImageFrameSource::new(fractal::render(

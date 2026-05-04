@@ -16,3 +16,12 @@ categories = ["multimedia"]
 [dependencies]
 oxideav-core = "0.1"
 serde_json = "1"
+# `label:` generator — uses scribe to shape + raster text onto an
+# RGBA canvas. Default-on; opt out with `--no-default-features` to
+# avoid the bundled DejaVu Sans Mono font (~340 KB) and the scribe
+# dep tree if the embedding context doesn't need text.
+oxideav-scribe = { version = "0.1", optional = true }
+
+[features]
+default = ["label"]
+label = ["dep:oxideav-scribe"]
