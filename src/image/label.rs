@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use oxideav_core::{
-    Error, FillRule, Group, Node, Paint, PathNode, Result, Rgba as CoreRgba, Transform2D,
+    Error, FillRule, Group, Node, Paint, PathNode, Result, Rgba as CoreRgba, TimeBase, Transform2D,
     VectorFrame,
 };
 use oxideav_raster::Renderer;
@@ -115,8 +115,19 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
         };
         root.children.push(Node::Group(placement));
     }
-    let mut frame = VectorFrame::new(canvas_w as f32, canvas_h as f32);
-    frame.root = root;
+    // Construct VectorFrame field-by-field rather than via the
+    // builder helpers (`VectorFrame::new` / `with_root`); the published
+    // oxideav-core 0.1.16 doesn't yet expose them, but the field
+    // layout is stable and lets generator compile against a wider range
+    // of core releases.
+    let frame = VectorFrame {
+        width: canvas_w as f32,
+        height: canvas_h as f32,
+        view_box: None,
+        root,
+        pts: None,
+        time_base: TimeBase::new(1, 1),
+    };
 
     let mut renderer = Renderer::new(canvas_w, canvas_h);
     renderer.background = rgba_to_core(bg);
