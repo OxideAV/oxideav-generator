@@ -22,9 +22,9 @@ use oxideav_core::{
 };
 
 use crate::audio::synth as audio_synth;
-use crate::image::{fractal, gradient, noise, pattern, plasma, xc, Rgba8Image};
 #[cfg(feature = "label")]
 use crate::image::label;
+use crate::image::{fractal, gradient, noise, pattern, plasma, xc, Rgba8Image};
 use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc, FrameSeq};
 
 /// Register the `generate` URI scheme as a [`FrameSource`] driver.

@@ -32,12 +32,16 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
     let color: Rgba = parse_color(q_str(query, "color", "black"))?;
     let bg: Rgba = parse_color(q_str(query, "bg", "white"))?;
     let padding = q_u32(query, "padding", 4)?;
-    let explicit_w = query.get("w").map(|s| s.parse::<u32>()).transpose().map_err(|_| {
-        Error::invalid("label: w must be a non-negative integer".to_string())
-    })?;
-    let explicit_h = query.get("h").map(|s| s.parse::<u32>()).transpose().map_err(|_| {
-        Error::invalid("label: h must be a non-negative integer".to_string())
-    })?;
+    let explicit_w = query
+        .get("w")
+        .map(|s| s.parse::<u32>())
+        .transpose()
+        .map_err(|_| Error::invalid("label: w must be a non-negative integer".to_string()))?;
+    let explicit_h = query
+        .get("h")
+        .map(|s| s.parse::<u32>())
+        .transpose()
+        .map_err(|_| Error::invalid("label: h must be a non-negative integer".to_string()))?;
 
     let face = load_face(query.get("font").map(|s| s.as_str()))?;
 
@@ -49,10 +53,10 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
     let glyph_w = glyph_bmp.width;
     let glyph_h = glyph_bmp.height;
 
-    let canvas_w = explicit_w
-        .unwrap_or_else(|| glyph_w.saturating_add(padding.saturating_mul(2)).max(1));
-    let canvas_h = explicit_h
-        .unwrap_or_else(|| glyph_h.saturating_add(padding.saturating_mul(2)).max(1));
+    let canvas_w =
+        explicit_w.unwrap_or_else(|| glyph_w.saturating_add(padding.saturating_mul(2)).max(1));
+    let canvas_h =
+        explicit_h.unwrap_or_else(|| glyph_h.saturating_add(padding.saturating_mul(2)).max(1));
 
     let mut img = Rgba8Image::new(canvas_w, canvas_h);
 
@@ -127,14 +131,12 @@ fn blit_straight_alpha(
 
 fn load_face(font_path: Option<&str>) -> Result<Face> {
     let bytes: Vec<u8> = match font_path {
-        Some(path) => std::fs::read(path).map_err(|e| {
-            Error::invalid(format!("label: failed to read font {path:?}: {e}"))
-        })?,
+        Some(path) => std::fs::read(path)
+            .map_err(|e| Error::invalid(format!("label: failed to read font {path:?}: {e}")))?,
         None => DEFAULT_FONT.to_vec(),
     };
-    Face::from_ttf_bytes(bytes).map_err(|e| {
-        Error::invalid(format!("label: failed to parse font: {e:?}"))
-    })
+    Face::from_ttf_bytes(bytes)
+        .map_err(|e| Error::invalid(format!("label: failed to parse font: {e:?}")))
 }
 
 #[cfg(test)]
@@ -199,8 +201,7 @@ mod tests {
 
     #[test]
     fn label_missing_font_file_clear_error() {
-        let err =
-            render(&map(&[("text", "x"), ("font", "/nonexistent/file.ttf")])).unwrap_err();
+        let err = render(&map(&[("text", "x"), ("font", "/nonexistent/file.ttf")])).unwrap_err();
         assert!(format!("{err:?}").contains("failed to read font"));
     }
 }
