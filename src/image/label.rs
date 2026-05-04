@@ -1,17 +1,22 @@
 //! `label:` text-to-image generator.
 //!
-//! Renders a string to an RGBA8 canvas using `oxideav-scribe` for
-//! shaping + rasterising. Mirrors ImageMagick's `label:Hello world`
-//! source: produces a still image sized to the rendered text plus
-//! padding (or to an explicit `w=… h=…` if the caller provides them).
+//! Renders a string to an RGBA8 canvas using `oxideav-scribe` (vector
+//! shaping → positioned glyph nodes) plus `oxideav-raster` (vector →
+//! pixels). Mirrors ImageMagick's `label:Hello world` source: produces
+//! a still image sized to the rendered text plus padding (or to an
+//! explicit `w=… h=…` if the caller provides them).
 //!
 //! Default font is the bundled DejaVu Sans Mono (~340 KB). Pass
 //! `font=/path/to/your.ttf` to override.
 
 use std::collections::BTreeMap;
 
-use oxideav_core::{Error, Result};
-use oxideav_scribe::{render_text, Face, Rgba};
+use oxideav_core::{
+    Error, FillRule, Group, Node, Paint, PathNode, Result, Rgba as CoreRgba, Transform2D,
+    VectorFrame,
+};
+use oxideav_raster::Renderer;
+use oxideav_scribe::{Face, FaceChain, Rgba, Shaper};
 
 use super::palette::parse_color;
 use super::Rgba8Image;
@@ -45,88 +50,143 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
 
     let face = load_face(query.get("font").map(|s| s.as_str()))?;
 
-    // Shape + raster the text into a tight RgbaBitmap. For empty input
-    // we still produce a canvas so callers always get a valid frame.
-    let glyph_bmp = render_text(&face, text, size_px, color)
-        .map_err(|e| Error::invalid(format!("label: scribe render failed: {e:?}")))?;
+    // Vector pipeline: shape into a positioned-glyph chain, measure the
+    // run's natural extent, recolour the default-black fill to the
+    // requested colour, then render via oxideav-raster.
 
-    let glyph_w = glyph_bmp.width;
-    let glyph_h = glyph_bmp.height;
+    // Pre-compute the run's natural pixel extent for canvas sizing. The
+    // shaper returns positioned glyphs whose `(x_offset + x_advance)`
+    // chain gives the total pen advance; the face metrics give the
+    // vertical extent (ascent above baseline + descent below).
+    let glyphs = Shaper::shape(&face, text, size_px)
+        .map_err(|e| Error::invalid(format!("label: scribe shape failed: {e:?}")))?;
+    let advance_px: f32 = glyphs.iter().map(|g| g.x_offset + g.x_advance).sum();
+    let ascent_px = face.ascent_px(size_px);
+    let descent_px = face.descent_px(size_px); // typically negative
+    let glyph_w = advance_px.ceil().max(0.0) as u32;
+    let glyph_h = (ascent_px - descent_px).ceil().max(0.0) as u32;
 
     let canvas_w =
         explicit_w.unwrap_or_else(|| glyph_w.saturating_add(padding.saturating_mul(2)).max(1));
     let canvas_h =
         explicit_h.unwrap_or_else(|| glyph_h.saturating_add(padding.saturating_mul(2)).max(1));
 
-    let mut img = Rgba8Image::new(canvas_w, canvas_h);
-
-    // Fill background.
-    for y in 0..canvas_h {
-        for x in 0..canvas_w {
-            img.put(x, y, bg);
-        }
-    }
-
+    // Empty / whitespace-only run → return a padded background canvas.
     if glyph_w == 0 || glyph_h == 0 {
-        return Ok(img);
+        return Ok(filled_canvas(canvas_w, canvas_h, bg));
     }
 
-    // Centre the glyph bitmap inside the canvas. Both axes are
-    // independently centred — yields a sensible placement whether the
-    // caller used auto-fit (== padding on each side) or an explicit
-    // canvas larger than the text.
-    let off_x = canvas_w.saturating_sub(glyph_w) / 2;
-    let off_y = canvas_h.saturating_sub(glyph_h) / 2;
+    // Build the vector scene: an outer Group whose children are the
+    // shape_to_paths glyph nodes (each already wrapped in a cache-keyed
+    // Group with its own `Transform2D::translate(target_x, y_offset)`
+    // relative to the run's pen origin). The outer Group translates
+    // the whole run so the baseline lands at
+    // `(centre_off_x, centre_off_y + ascent_px)` inside the canvas.
+    let chain = FaceChain::new(face);
+    let placed = Shaper::shape_to_paths(&chain, text, size_px);
 
-    blit_straight_alpha(&mut img, off_x, off_y, &glyph_bmp.data, glyph_w, glyph_h);
+    // Centre the run inside the canvas. Both axes independently centred
+    // — same behaviour as the previous bitmap-blit path.
+    let centre_off_x = (canvas_w.saturating_sub(glyph_w) / 2) as f32;
+    let centre_off_y = (canvas_h.saturating_sub(glyph_h) / 2) as f32;
+    // Pen Y inside the canvas: top of the bbox sits at centre_off_y,
+    // baseline lives `ascent_px` below that.
+    let pen_y = centre_off_y + ascent_px;
+    let pen_x = centre_off_x;
 
-    Ok(img)
+    let fill = Paint::Solid(rgba_to_core(color));
+    let mut root = Group {
+        transform: Transform2D::translate(pen_x, pen_y),
+        ..Group::default()
+    };
+    for (_face_idx, glyph_node, transform) in placed {
+        // shape_to_paths already wraps each glyph in
+        // Group { cache_key: Some, children: [PathNode|Image] } with an
+        // identity inner transform; we wrap that in a *placement* Group
+        // carrying the per-glyph translate. The recolour pass walks the
+        // inner PathNode (outline glyphs) and replaces the default-black
+        // fill with the requested colour. Image glyphs (CBDT/sbix) keep
+        // their carried palette unchanged.
+        let recoloured = recolour_glyph(glyph_node, &fill);
+        let placement = Group {
+            transform,
+            children: vec![recoloured],
+            ..Group::default()
+        };
+        root.children.push(Node::Group(placement));
+    }
+    let mut frame = VectorFrame::new(canvas_w as f32, canvas_h as f32);
+    frame.root = root;
+
+    let mut renderer = Renderer::new(canvas_w, canvas_h);
+    renderer.background = rgba_to_core(bg);
+    let video_frame = renderer.render(&frame);
+    let plane = video_frame
+        .planes
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::invalid("label: raster produced empty frame".to_string()))?;
+
+    // The renderer emits packed straight-alpha RGBA8 with stride =
+    // width*4; copy verbatim into Rgba8Image.
+    let expected = (canvas_w as usize) * (canvas_h as usize) * 4;
+    if plane.data.len() != expected || plane.stride != (canvas_w as usize) * 4 {
+        return Err(Error::invalid(format!(
+            "label: raster output size mismatch: stride={} bytes={} expected={}",
+            plane.stride,
+            plane.data.len(),
+            expected
+        )));
+    }
+    Ok(Rgba8Image {
+        width: canvas_w,
+        height: canvas_h,
+        pixels: plane.data,
+    })
 }
 
-/// Compose `src` (straight-alpha RGBA, row-major, width*4 stride) over
-/// the destination canvas at `(off_x, off_y)`. Skips out-of-bounds
-/// pixels (saturating offsets handle the case where the destination is
-/// smaller than `src + offset`).
-fn blit_straight_alpha(
-    dst: &mut Rgba8Image,
-    off_x: u32,
-    off_y: u32,
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-) {
-    let dst_w = dst.width;
-    let dst_h = dst.height;
-    let stride = (src_w as usize) * 4;
-    for sy in 0..src_h {
-        let dy = off_y + sy;
-        if dy >= dst_h {
-            break;
-        }
-        for sx in 0..src_w {
-            let dx = off_x + sx;
-            if dx >= dst_w {
-                break;
-            }
-            let si = (sy as usize) * stride + (sx as usize) * 4;
-            let s = &src[si..si + 4];
-            let sa = s[3];
-            if sa == 0 {
-                continue;
-            }
-            let bg = dst.get(dx, dy);
-            // Straight-alpha over: out = src * a + dst * (1-a).
-            let inv = 255 - sa;
-            let r = ((s[0] as u32) * (sa as u32) + (bg[0] as u32) * (inv as u32) + 127) / 255;
-            let g = ((s[1] as u32) * (sa as u32) + (bg[1] as u32) * (inv as u32) + 127) / 255;
-            let b = ((s[2] as u32) * (sa as u32) + (bg[2] as u32) * (inv as u32) + 127) / 255;
-            // Output alpha = 1 - (1-sa)(1-da).
-            let da = bg[3] as u32;
-            let out_a = sa as u32 + (da * inv as u32 + 127) / 255;
-            let out_a = out_a.min(255) as u8;
-            dst.put(dx, dy, [r as u8, g as u8, b as u8, out_a]);
+/// Build a `width × height` canvas filled with `colour`. Used when the
+/// run shapes to zero glyphs (empty / whitespace-only text) so callers
+/// always get a valid frame.
+fn filled_canvas(width: u32, height: u32, colour: Rgba) -> Rgba8Image {
+    let mut img = Rgba8Image::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            img.put(x, y, colour);
         }
     }
+    img
+}
+
+/// Replace the default-black `PathNode.fill` on outline glyph nodes
+/// with the requested run colour. `shape_to_paths` always wraps each
+/// glyph in `Group { children: [PathNode | Image] }` (round-8 cache
+/// envelope), so we walk into that one child and rewrite the fill in
+/// place. Bitmap glyphs (`Node::Image`) carry their own colour and are
+/// left untouched.
+fn recolour_glyph(node: Node, fill: &Paint) -> Node {
+    match node {
+        Node::Group(mut g) => {
+            for child in g.children.iter_mut() {
+                let placeholder = std::mem::replace(child, Node::Group(Group::default()));
+                *child = recolour_glyph(placeholder, fill);
+            }
+            Node::Group(g)
+        }
+        Node::Path(p) => Node::Path(PathNode {
+            path: p.path,
+            fill: Some(fill.clone()),
+            stroke: p.stroke,
+            fill_rule: FillRule::NonZero,
+        }),
+        // Bitmap glyphs (CBDT/sbix → Node::Image) keep their carried
+        // palette; the run `color` parameter is meaningless for them.
+        other => other,
+    }
+}
+
+fn rgba_to_core(c: Rgba) -> CoreRgba {
+    CoreRgba::new(c[0], c[1], c[2], c[3])
 }
 
 fn load_face(font_path: Option<&str>) -> Result<Face> {

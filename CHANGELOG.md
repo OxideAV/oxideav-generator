@@ -6,6 +6,24 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Changed — `label:` migrated to vector pipeline (#354)
+
+- The `label:text=...` generator no longer uses the removed
+  `oxideav_scribe::render_text` API (scribe shipped a vector-only
+  refactor that drops its pixel pipeline). The label render now does
+  the standard two-step:
+  1. `oxideav_scribe::Shaper::shape_to_paths` to emit positioned
+     `oxideav_core::Node` glyphs (with the `cache_key` envelope so
+     repeat-glyph runs hit the rasterizer's bitmap cache);
+  2. `oxideav_raster::Renderer::render` to walk the resulting
+     `VectorFrame` and produce a packed RGBA `VideoFrame`.
+- The `label` cargo feature now also pulls in `oxideav-raster` (~1
+  extra crate, ~140 KB compressed). Public API surface is unchanged
+  (`render(&BTreeMap<String, String>) -> Result<Rgba8Image>`) and the
+  CLI shorthand `label:Hello world` keeps producing the same
+  centred-glyph-on-canvas output it did before — this is an
+  implementation refactor, not a behaviour change.
+
 ## [0.1.1](https://github.com/OxideAV/oxideav-generator/compare/v0.1.0...v0.1.1) - 2026-05-03
 
 ### Other
