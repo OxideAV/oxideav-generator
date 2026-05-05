@@ -16,6 +16,10 @@ categories = ["multimedia"]
 [dependencies]
 oxideav-core = "0.1"
 serde_json = "1"
+# Distributed-slice auto-registration into `oxideav_core::REGISTRARS`
+# via the `oxideav_core::register!` macro. Tiny crate, no transitive
+# deps; works on every target including wasm.
+linkme = "0.3"
 # `label:` generator — uses oxideav-scribe to shape text into vector
 # glyph nodes and oxideav-raster to render them onto an RGBA canvas.
 # Default-on; opt out with `--no-default-features` to avoid the bundled
