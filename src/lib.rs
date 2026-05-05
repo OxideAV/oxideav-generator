@@ -16,6 +16,11 @@
 //!    names. Register them via [`register_filters`] on a
 //!    [`RuntimeContext`](oxideav_core::RuntimeContext).
 //!
+//! For the common case where you want both shapes installed at once,
+//! use the unified [`register`] entry point — it threads a single
+//! [`RuntimeContext`](oxideav_core::RuntimeContext) through both
+//! [`register_source`] (on `ctx.sources`) and [`register_filters`].
+//!
 //! ## CLI shorthands
 //!
 //! [`shorthand::translate`] takes ImageMagick / sox style inputs
@@ -50,3 +55,59 @@ mod filters;
 
 pub use filters::register_filters;
 pub use source::{open_generate_frames, register_source};
+
+/// Install every generator integration into a full runtime context.
+///
+/// This is the unified `register(&mut RuntimeContext)` entry point
+/// every sibling crate exposes. It calls
+/// [`register_source`] on `ctx.sources` (so `generate://...` URIs
+/// open as `SourceOutput::Frames`) and [`register_filters`] on `ctx`
+/// (so the `audio.synth` / `image.*` / `video.*` factories show up in
+/// `ctx.filters`). Callers that only want one half can keep using the
+/// helpers directly.
+pub fn register(ctx: &mut oxideav_core::RuntimeContext) {
+    source::register_source(&mut ctx.sources);
+    filters::register_filters(ctx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn register_via_runtime_context_installs_source_and_filters() {
+        let mut ctx = oxideav_core::RuntimeContext::new();
+        register(&mut ctx);
+
+        // Source side: the `generate` scheme must be installed on
+        // `ctx.sources`.
+        let schemes: BTreeSet<&str> = ctx.sources.schemes().collect();
+        assert!(
+            schemes.contains("generate"),
+            "register did not install the generate URI scheme; got {schemes:?}"
+        );
+
+        // Filter side: every published filter name must land in
+        // `ctx.filters`. Names mirror the catalogue documented on
+        // `register_filters`.
+        for name in [
+            "audio.synth",
+            "image.xc",
+            "image.gradient",
+            "image.pattern",
+            "image.fractal",
+            "image.plasma",
+            "image.noise",
+            "video.testsrc",
+            "video.smptebars",
+            "video.fractal_zoom",
+            "video.gradient_animate",
+        ] {
+            assert!(
+                ctx.filters.contains(name),
+                "register did not install the {name} filter"
+            );
+        }
+    }
+}

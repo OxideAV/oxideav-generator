@@ -6,6 +6,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Added — unified `register(&mut RuntimeContext)` entry point (#502)
+
+- New top-level `oxideav_generator::register(&mut RuntimeContext)`
+  aggregates the existing `register_source` (URI side) +
+  `register_filters` (filter-graph side) helpers into the single
+  umbrella-friendly entry point every sibling crate now exposes. The
+  helpers stay available for callers that only want one half. No
+  breaking API change.
+
 ## [0.1.2](https://github.com/OxideAV/oxideav-generator/compare/v0.1.1...v0.1.2) - 2026-05-04
 
 ### Other
