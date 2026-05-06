@@ -66,11 +66,8 @@ pub use source::{open_generate_frames, register_source};
 /// `ctx.filters`). Callers that only want one half can keep using the
 /// helpers directly.
 ///
-/// Also auto-registered into [`oxideav_core::REGISTRARS`] via the
-/// [`oxideav_core::register!`] macro below so consumers calling
-/// [`oxideav_core::RuntimeContext::with_all_features`] pick the
-/// `generate://` source + synthesis filters up without any explicit
-/// umbrella plumbing.
+/// Also wired into [`oxideav_meta::register_all`] via the
+/// [`oxideav_core::register!`] macro below.
 pub fn register(ctx: &mut oxideav_core::RuntimeContext) {
     source::register_source(&mut ctx.sources);
     filters::register_filters(ctx);
