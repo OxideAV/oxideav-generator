@@ -6,6 +6,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/OxideAV/oxideav-generator/compare/v0.1.2...v0.1.3) - 2026-05-06
+
+### Other
+
+- drop stale REGISTRARS / with_all_features intra-doc links
+- drop dead `linkme` dep
+- drop committed Cargo.lock + relax oxideav-core to "0.1"
+- auto-register via oxideav_core::register! macro (linkme distributed slice)
+- add top-level register(&mut RuntimeContext) entry point ([#502](https://github.com/OxideAV/oxideav-generator/pull/502))
+
 ### Added — unified `register(&mut RuntimeContext)` entry point (#502)
 
 - New top-level `oxideav_generator::register(&mut RuntimeContext)`
