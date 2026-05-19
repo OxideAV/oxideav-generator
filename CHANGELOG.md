@@ -6,6 +6,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/OxideAV/oxideav-generator/compare/v0.1.3...v0.1.4) - 2026-05-19
+
+### Other
+
+- add chirp / FM / multitone modes + video zoneplate pattern
+
 ### Added
 
 - Audio synth gained three modes:
