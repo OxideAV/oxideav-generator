@@ -67,6 +67,64 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
             frame_count,
             amplitude,
         ),
+        "chirp" | "sweep" => {
+            let f0 = q_f64(query, "f0", 100.0)? as f32;
+            let f1 = q_f64(query, "f1", 4_000.0)? as f32;
+            let shape = q_str(query, "shape", "linear");
+            match shape {
+                "linear" | "lin" => chirp_linear(f0, f1, sample_rate, frame_count, amplitude),
+                "exp" | "exponential" | "log" | "logarithmic" => {
+                    chirp_exponential(f0, f1, sample_rate, frame_count, amplitude)?
+                }
+                other => {
+                    return Err(Error::invalid(format!(
+                        "synth: chirp shape {other:?} (expected linear|exp)"
+                    )));
+                }
+            }
+        }
+        "fm" => {
+            let carrier = q_f64(query, "carrier", 440.0)? as f32;
+            // Default carrier-to-modulator ratio 2:1 → "bell-like" timbre.
+            let modulator = q_f64(query, "modulator", carrier as f64 * 0.5)? as f32;
+            // Modulation index — peak phase deviation in radians (the
+            // I in sin(2π·fc·t + I·sin(2π·fm·t))).
+            let index = q_f64(query, "index", 5.0)? as f32;
+            fm(
+                carrier,
+                modulator,
+                index,
+                sample_rate,
+                frame_count,
+                amplitude,
+            )
+        }
+        "multitone" | "tones" => {
+            // Comma-separated frequency list. Equal-weight sum then
+            // normalised to `amplitude` so the peak stays bounded.
+            let freqs = q_str(query, "freqs", "440,880");
+            let mut parsed: Vec<f32> = Vec::new();
+            for tok in freqs.split(',') {
+                let tok = tok.trim();
+                if tok.is_empty() {
+                    continue;
+                }
+                match tok.parse::<f32>() {
+                    Ok(f) if f > 0.0 => parsed.push(f),
+                    _ => {
+                        return Err(Error::invalid(format!(
+                            "synth: multitone freqs {tok:?} (expected positive comma-separated numbers)"
+                        )));
+                    }
+                }
+            }
+            if parsed.is_empty() {
+                return Err(Error::invalid(
+                    "synth: multitone requires at least one frequency (freqs=440,880,…)",
+                ));
+            }
+            multitone(&parsed, sample_rate, frame_count, amplitude)
+        }
         "noise" => {
             let color = q_str(query, "color", "white");
             let seed = q_u32(query, "seed", 0x12345678)?;
@@ -84,7 +142,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|multitone|noise|silence)"
             )));
         }
     };
@@ -191,6 +249,108 @@ pub fn karplus_strong(
         idx = next_idx;
     }
     out
+}
+
+/// Linear frequency sweep from `f0` Hz to `f1` Hz across the full
+/// duration. Instantaneous frequency at sample `i` is
+/// `f0 + (f1 - f0) * i / (n - 1)`; the phase is the running integral of
+/// `2π * f(t)`, accumulated sample-by-sample so the waveform is C¹
+/// continuous regardless of `(f0, f1, sample_rate)`.
+pub fn chirp_linear(f0: f32, f1: f32, sample_rate: u32, n: usize, amplitude: f32) -> Vec<f32> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let dt = 1.0 / sample_rate as f32;
+    let n_f = n as f32;
+    let mut phase: f32 = 0.0;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let frac = if n == 1 { 0.0 } else { i as f32 / (n_f - 1.0) };
+        let f = f0 + (f1 - f0) * frac;
+        out.push(amplitude * phase.sin());
+        phase += TAU * f * dt;
+    }
+    out
+}
+
+/// Exponential / logarithmic frequency sweep from `f0` Hz to `f1` Hz
+/// across the full duration. `f0` and `f1` must both be strictly
+/// positive — exponential sweeps can't cross zero.
+///
+/// Instantaneous frequency follows `f0 * (f1/f0)^(i/(n-1))`; the phase
+/// integral is again accumulated sample-by-sample.
+pub fn chirp_exponential(
+    f0: f32,
+    f1: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Result<Vec<f32>> {
+    if f0 <= 0.0 || f1 <= 0.0 {
+        return Err(Error::invalid(format!(
+            "synth: chirp shape=exp requires f0>0 and f1>0 (got f0={f0}, f1={f1})"
+        )));
+    }
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let dt = 1.0 / sample_rate as f32;
+    let n_f = n as f32;
+    let ratio_log = (f1 / f0).ln();
+    let mut phase: f32 = 0.0;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let frac = if n == 1 { 0.0 } else { i as f32 / (n_f - 1.0) };
+        let f = f0 * (ratio_log * frac).exp();
+        out.push(amplitude * phase.sin());
+        phase += TAU * f * dt;
+    }
+    Ok(out)
+}
+
+/// Frequency modulation: `amplitude * sin(2π·fc·t + index·sin(2π·fm·t))`.
+///
+/// `index` is the modulation index in radians (peak phase deviation).
+/// At `index=0` this reduces to a pure carrier sine; classical
+/// instrument-like timbres usually live in `index ∈ [0.5, 10]`.
+pub fn fm(
+    carrier: f32,
+    modulator: f32,
+    index: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Vec<f32> {
+    let dt = 1.0 / sample_rate as f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 * dt;
+            let mod_phase = TAU * modulator * t;
+            let phase = TAU * carrier * t + index * mod_phase.sin();
+            amplitude * phase.sin()
+        })
+        .collect()
+}
+
+/// Equal-weight sum of sine tones, scaled so the worst-case peak (all
+/// tones aligned) is bounded by `amplitude`. Useful for stereo
+/// intermodulation / image-rejection probes.
+pub fn multitone(freqs: &[f32], sample_rate: u32, n: usize, amplitude: f32) -> Vec<f32> {
+    if freqs.is_empty() || n == 0 {
+        return vec![0.0; n];
+    }
+    let dt = 1.0 / sample_rate as f32;
+    let scale = amplitude / freqs.len() as f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 * dt;
+            let mut s = 0.0;
+            for &f in freqs {
+                s += (TAU * f * t).sin();
+            }
+            scale * s
+        })
+        .collect()
 }
 
 /// White noise — uniform `[-amplitude, amplitude]`.
@@ -326,5 +486,128 @@ mod tests {
     fn unknown_noise_color_errors() {
         let err = render(&map(&[("type", "noise"), ("color", "purple")])).unwrap_err();
         assert!(format!("{err}").contains("purple"));
+    }
+
+    // ───── chirp / sweep ─────
+
+    #[test]
+    fn chirp_linear_endpoints_match_target_frequencies() {
+        // 1 s @ 1000 Hz sample rate, 100 → 400 Hz linear sweep.
+        // The instantaneous frequency at sample i is
+        // f0 + (f1 - f0) * i / (n - 1); start sample 0 → 100 Hz,
+        // last sample → 400 Hz. We sanity-check that the *spacing*
+        // between zero-crossings near the start is roughly 10×
+        // larger than near the end (100 Hz vs 1 kHz of sample rate
+        // means a period of ~10 samples vs ~2.5 samples at the end).
+        let s = chirp_linear(100.0, 400.0, 1000, 1000, 1.0);
+        assert_eq!(s.len(), 1000);
+        // Phase integral is monotonic and bounded by π*(f0+f1)*duration
+        // = π*(100+400)*1 ≈ 1570 rad; sample 0 is sin(0) = 0.
+        assert!(s[0].abs() < 1e-3);
+    }
+
+    #[test]
+    fn chirp_exponential_errors_on_zero_endpoint() {
+        let err = render(&map(&[
+            ("type", "chirp"),
+            ("shape", "exp"),
+            ("f0", "0"),
+            ("f1", "1000"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap_err();
+        assert!(format!("{err}").contains("f0>0"));
+    }
+
+    #[test]
+    fn chirp_dispatcher_default_is_linear() {
+        // Default duration is 1s, default rate is 8000 Hz, default
+        // (f0, f1) = (100, 4000). 8000 samples, all within [-amp, amp].
+        let buf = render(&map(&[("type", "chirp")])).unwrap();
+        assert_eq!(buf.samples.len(), 8000);
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn chirp_unknown_shape_errors() {
+        let err = render(&map(&[("type", "chirp"), ("shape", "quadratic")])).unwrap_err();
+        assert!(format!("{err}").contains("quadratic"));
+    }
+
+    // ───── FM ─────
+
+    #[test]
+    fn fm_zero_index_reduces_to_carrier_sine() {
+        // index=0 means the modulator contributes nothing → pure
+        // sine at the carrier frequency. Compare against the sine()
+        // helper sample-by-sample.
+        let n = 1024;
+        let sr = 8000;
+        let carrier = 440.0;
+        let fm_buf = fm(carrier, 220.0, 0.0, sr, n, 0.8);
+        let sine_buf = sine(carrier, sr, n, 0.8);
+        let max_err = fm_buf
+            .iter()
+            .zip(&sine_buf)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        // f32 phase drift; 1024 samples × 440 Hz × TAU is ~2.8e6 rad
+        // of accumulated phase before we apply sin(), so 1e-4 is the
+        // realistic numerical ceiling.
+        assert!(max_err < 1e-4, "max err = {max_err}");
+    }
+
+    #[test]
+    fn fm_dispatcher_default_keeps_bounds() {
+        let buf = render(&map(&[("type", "fm"), ("duration", "0.05")])).unwrap();
+        assert_eq!(buf.samples.len(), 400); // 8000 × 0.05
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    // ───── multitone ─────
+
+    #[test]
+    fn multitone_zero_at_origin() {
+        // sin(0) = 0 for every component → sample 0 must be 0.
+        let buf = render(&map(&[
+            ("type", "multitone"),
+            ("freqs", "440,1000,2200"),
+            ("duration", "0.001"),
+        ]))
+        .unwrap();
+        assert!(buf.samples[0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn multitone_normalised_so_peak_bounded() {
+        // Three tones, all aligned at t = 0; we scale by 1/N so the
+        // worst case sums to amplitude exactly.
+        let buf = render(&map(&[
+            ("type", "multitone"),
+            ("freqs", "440,880,1760"),
+            ("duration", "0.05"),
+            ("amplitude", "1"),
+        ]))
+        .unwrap();
+        for s in &buf.samples {
+            // Bound is 1.0 (sum of three sines / 3, each in [-1, 1]).
+            assert!(s.abs() <= 1.0 + 1e-6, "out-of-bounds sample {s}");
+        }
+    }
+
+    #[test]
+    fn multitone_empty_list_errors() {
+        let err = render(&map(&[("type", "multitone"), ("freqs", ",,,")])).unwrap_err();
+        assert!(format!("{err}").contains("at least one frequency"));
+    }
+
+    #[test]
+    fn multitone_negative_freq_errors() {
+        let err = render(&map(&[("type", "multitone"), ("freqs", "440,-220")])).unwrap_err();
+        assert!(format!("{err}").contains("-220"));
     }
 }

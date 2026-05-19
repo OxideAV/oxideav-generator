@@ -6,6 +6,33 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Added
+
+- Audio synth gained three modes:
+  - `chirp` / `sweep` — linear or exponential frequency sweep
+    between `f0` and `f1`; phase is integrated sample-by-sample so
+    the waveform is C¹ continuous regardless of `(f0, f1,
+    sample_rate)`. Exponential shape requires `f0 > 0` and
+    `f1 > 0`.
+  - `fm` — classical 2-operator frequency modulation
+    `amplitude · sin(2π·fc·t + index·sin(2π·fm·t))`. Defaults
+    pick a 2:1 carrier:modulator ratio and `index=5` for a
+    bell-like timbre; `index=0` collapses to a pure carrier sine.
+  - `multitone` / `tones` — equal-weight sum of sine tones from a
+    comma-separated `freqs=440,1000,2200` list. Output is
+    normalised by tone count so the worst-case peak stays inside
+    `[-amplitude, amplitude]`. Useful for stereo intermodulation
+    and image-rejection probes.
+- Video catalogue gained `zoneplate` — `cos(k·r²)` radial chirp
+  rendered to luma, with optional `motion=none|temporal|
+  horizontal|vertical` to animate without changing the overall
+  structure. The pattern's local spatial frequency rises linearly
+  with distance from the centre, so it exercises every spatial
+  frequency the renderer supports in a single image — aliasing,
+  ringing and interpolation artefacts appear as moiré rings.
+- `zoneplate:` CLI shorthand and `video.zoneplate` filter wired
+  through the standard `register()` aggregation.
+
 ## [0.1.3](https://github.com/OxideAV/oxideav-generator/compare/v0.1.2...v0.1.3) - 2026-05-06
 
 ### Other

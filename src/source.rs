@@ -25,7 +25,7 @@ use crate::audio::synth as audio_synth;
 #[cfg(feature = "label")]
 use crate::image::label;
 use crate::image::{fractal, gradient, noise, pattern, plasma, xc, Rgba8Image};
-use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc, FrameSeq};
+use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc, zoneplate, FrameSeq};
 
 /// Register the `generate` URI scheme as a [`FrameSource`] driver.
 pub fn register_source(registry: &mut SourceRegistry) {
@@ -88,6 +88,9 @@ pub fn open_generate_frames(uri: &str) -> Result<Box<dyn FrameSource>> {
         "gradient_animate" => Ok(Box::new(VideoFrameSourceImpl::new(
             gradient_animate::render(&parsed.query)?,
         ))),
+        "zoneplate" => Ok(Box::new(VideoFrameSourceImpl::new(zoneplate::render(
+            &parsed.query,
+        )?))),
 
         other => Err(Error::Unsupported(format!(
             "generate://{other}: unknown generator kind"

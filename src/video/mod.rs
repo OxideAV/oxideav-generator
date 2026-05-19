@@ -13,6 +13,7 @@ pub mod fractal_zoom;
 pub mod gradient_animate;
 pub mod smptebars;
 pub mod testsrc;
+pub mod zoneplate;
 
 use crate::image::Rgba8Image;
 

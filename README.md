@@ -2,11 +2,12 @@
 
 Pure-Rust synthetic media generator for the oxideav framework. Provides
 audio synth (sine / square / triangle / sawtooth / Karplus-Strong pluck /
-white-pink-brown noise / silence), image basics (solid colour, linear /
-radial gradient, checkerboard, horizontal / vertical stripes), procedural
-imagery (Mandelbrot + Julia fractals, plasma, Perlin noise), and video
+linear + exponential chirp / FM / multi-tone / white-pink-brown noise /
+silence), image basics (solid colour, linear / radial gradient,
+checkerboard, horizontal / vertical stripes), procedural imagery
+(Mandelbrot + Julia fractals, plasma, Perlin noise), and video
 (ffmpeg-style `testsrc`, SMPTE colour bars, animated Mandelbrot zoom,
-hue-rotating gradient).
+hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency probe).
 
 Two integration shapes are exposed:
 
@@ -36,6 +37,10 @@ path produces frames natively.)
 generate://synth?type=sine&freq=440&duration=5
 generate://synth?type=square&freq=220&duration=2&amplitude=0.5
 generate://synth?type=pluck&freq=440&decay=0.99&duration=3
+generate://synth?type=chirp&shape=linear&f0=200&f1=4000&duration=4
+generate://synth?type=chirp&shape=exp&f0=20&f1=20000&duration=4
+generate://synth?type=fm&carrier=440&modulator=110&index=5&duration=2
+generate://synth?type=multitone&freqs=440,1000,2200&duration=1
 generate://synth?type=noise&color=pink&duration=10
 
 generate://xc?color=red&w=640&h=480
@@ -47,6 +52,10 @@ generate://fractal?type=mandelbrot&w=640&h=480&cx=-0.5&cy=0&zoom=2&iter=256
 generate://fractal?type=julia&w=640&h=480&cx=-0.7&cy=0.27&iter=256
 generate://plasma?w=640&h=480&seed=42
 generate://noise?type=perlin&w=640&h=480&scale=64&seed=42
+
+generate://testsrc?w=640&h=480&duration=5&fps=30
+generate://smptebars?w=640&h=480&duration=5&fps=30
+generate://zoneplate?w=640&h=480&duration=5&fps=30&k=0.05&motion=temporal
 ```
 
 ## CLI shorthands (convert verb only)
@@ -68,6 +77,7 @@ registry. Recognised prefixes:
 | `synth:5,sine,440`     | `generate://synth?duration=5&type=sine&freq=440`             |
 | `testsrc:`             | `generate://testsrc`                                         |
 | `smptebars:`           | `generate://smptebars`                                       |
+| `zoneplate:`           | `generate://zoneplate`                                       |
 | `noise:perlin`         | `generate://noise?type=perlin`                               |
 
 `probe` / `transcode` / `remux` / `run` accept the canonical
@@ -85,6 +95,15 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 3 (2026-05-20): synth catalogue grew chirp / FM / multitone
+modes (linear + exponential frequency sweeps; classical 2-operator
+frequency modulation; equal-weight tone sums). Video catalogue
+gained `zoneplate` — `cos(k·r²)` radial chirp, optional
+`motion=temporal|horizontal|vertical` to animate it without
+changing structure. All three additions are math-only (no spec
+dependency); useful for codec PSNR / motion-search / spatial-
+frequency probes.
 
 Round 2 (2026-05-02): URI source path migrated to the new typed
 `SourceRegistry` `FrameSource` shape — every `generate://…` URI returns

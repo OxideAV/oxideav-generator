@@ -189,6 +189,87 @@ fn video_gradient_animate_returns_frames_variant() {
     assert_eq!(frames.len(), 2);
 }
 
+#[test]
+fn video_zoneplate_returns_frames_variant() {
+    // Zone plate at 9×9 (odd-sized so the centre is an integer pixel)
+    // with amplitude=1 produces a peak-luma centre. 0.2 s × 10 fps = 2
+    // frames, both identical with motion=none.
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://zoneplate?w=9&h=9&duration=0.2&fps=10&k=0.05",
+    );
+    let p = src.params();
+    assert_eq!(p.media_type, MediaType::Video);
+    assert_eq!(p.width, Some(9));
+    assert_eq!(p.height, Some(9));
+    assert_eq!(p.pixel_format, Some(PixelFormat::Rgba));
+    assert_eq!(p.frame_rate, Some(Rational::new(10, 1)));
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 2);
+    // Centre pixel of the first frame is white (cos(0) = 1).
+    let Frame::Video(v) = &frames[0] else {
+        panic!();
+    };
+    let stride = v.planes[0].stride;
+    let centre_offset = 4 * stride + 4 * 4; // (x=4, y=4)
+    assert_eq!(
+        &v.planes[0].data[centre_offset..centre_offset + 4],
+        &[255, 255, 255, 255]
+    );
+}
+
+#[test]
+fn synth_chirp_returns_audio_frames() {
+    // 0.05 s sweep from 200 → 800 Hz, linear. 8000 × 0.05 = 400 mono
+    // samples × 2 bytes = 800 bytes of S16 LE PCM.
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://synth?type=chirp&f0=200&f1=800&shape=linear&duration=0.05",
+    );
+    let p = src.params();
+    assert_eq!(p.media_type, MediaType::Audio);
+    assert_eq!(p.codec_id.as_str(), "pcm_s16le");
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 1);
+    let Frame::Audio(a) = &frames[0] else {
+        panic!();
+    };
+    assert_eq!(a.samples, 400);
+    assert_eq!(a.data[0].len(), 800);
+}
+
+#[test]
+fn synth_fm_returns_audio_frames() {
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://synth?type=fm&carrier=440&modulator=110&index=4&duration=0.02",
+    );
+    let frames = drain(&mut *src).unwrap();
+    let Frame::Audio(a) = &frames[0] else {
+        panic!();
+    };
+    // 8000 × 0.02 = 160 samples × S16 LE = 320 bytes.
+    assert_eq!(a.samples, 160);
+    assert_eq!(a.data[0].len(), 320);
+}
+
+#[test]
+fn synth_multitone_returns_audio_frames() {
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://synth?type=multitone&freqs=440,1000,2200&duration=0.01",
+    );
+    let frames = drain(&mut *src).unwrap();
+    let Frame::Audio(a) = &frames[0] else {
+        panic!();
+    };
+    assert_eq!(a.samples, 80);
+}
+
 // ---------------------------- Errors ----------------------------
 
 #[test]

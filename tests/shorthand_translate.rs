@@ -30,6 +30,7 @@ fn all_shorthand_translations_round_trip() {
         ),
         ("testsrc:", "generate://testsrc"),
         ("smptebars:", "generate://smptebars"),
+        ("zoneplate:", "generate://zoneplate"),
         ("noise:perlin", "generate://noise?type=perlin"),
     ];
     for (input, want) in cases {

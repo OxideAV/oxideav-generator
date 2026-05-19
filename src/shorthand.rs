@@ -17,6 +17,7 @@
 //! | `synth:5,sine,440`       | `generate://synth?type=sine&freq=440&duration=5` |
 //! | `testsrc:`               | `generate://testsrc`                            |
 //! | `smptebars:`             | `generate://smptebars`                          |
+//! | `zoneplate:`             | `generate://zoneplate`                          |
 //! | `noise:perlin`           | `generate://noise?type=perlin`                  |
 //! | `label:Hello world`      | `generate://label?text=Hello%20world`           |
 //!
@@ -86,6 +87,12 @@ fn try_translate(input: &str) -> Option<String> {
             return Some("generate://smptebars".to_string());
         }
         return Some(format!("generate://smptebars?{rest}"));
+    }
+    if let Some(rest) = input.strip_prefix("zoneplate:") {
+        if rest.is_empty() {
+            return Some("generate://zoneplate".to_string());
+        }
+        return Some(format!("generate://zoneplate?{rest}"));
     }
     if let Some(rest) = input.strip_prefix("noise:") {
         if rest.is_empty() {
@@ -271,6 +278,19 @@ mod tests {
     #[test]
     fn smptebars_bare() {
         assert_eq!(translate("smptebars:"), "generate://smptebars");
+    }
+
+    #[test]
+    fn zoneplate_bare() {
+        assert_eq!(translate("zoneplate:"), "generate://zoneplate");
+    }
+
+    #[test]
+    fn zoneplate_with_query() {
+        assert_eq!(
+            translate("zoneplate:w=128&h=128&k=0.1"),
+            "generate://zoneplate?w=128&h=128&k=0.1"
+        );
     }
 
     #[test]

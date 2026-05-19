@@ -12,8 +12,8 @@
 //!    [`StreamFilter`](oxideav_core::StreamFilter) factory under the
 //!    `audio.synth`, `image.xc`, `image.gradient`, `image.pattern`,
 //!    `image.fractal`, `image.plasma`, `image.noise`, `video.testsrc`,
-//!    `video.smptebars`, `video.fractal_zoom`, `video.gradient_animate`
-//!    names. Register them via [`register_filters`] on a
+//!    `video.smptebars`, `video.fractal_zoom`, `video.gradient_animate`,
+//!    `video.zoneplate` names. Register them via [`register_filters`] on a
 //!    [`RuntimeContext`](oxideav_core::RuntimeContext).
 //!
 //! For the common case where you want both shapes installed at once,
@@ -33,7 +33,9 @@
 //! ## Catalog
 //!
 //! - **Audio** — sine / square / triangle / sawtooth / pluck (Karplus-
-//!   Strong) / white-pink-brown noise / silence.
+//!   Strong) / chirp (linear or exponential sweep) / fm (frequency
+//!   modulation) / multitone (sum of sines) / white-pink-brown noise /
+//!   silence.
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,
 //!   checkerboard / horizontal / vertical / diagonal patterns.
 //! - **Procedural images** — Mandelbrot + Julia fractals, plasma
@@ -41,7 +43,8 @@
 //! - **Video** — `testsrc` (ffmpeg-equivalent timestamp + colour bars +
 //!   circle), `smptebars` (SMPTE 75% colour bars), `fractal_zoom`
 //!   (animated Mandelbrot zoom), `gradient_animate` (hue-rotating
-//!   gradient).
+//!   gradient), `zoneplate` (radial cos(k·r²) chirp — spatial-frequency
+//!   probe).
 
 #![allow(clippy::too_many_arguments)]
 
@@ -108,6 +111,7 @@ mod tests {
             "video.smptebars",
             "video.fractal_zoom",
             "video.gradient_animate",
+            "video.zoneplate",
         ] {
             assert!(
                 ctx.filters.contains(name),

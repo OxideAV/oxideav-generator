@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::audio::f32_sample_to_i16;
 use crate::audio::synth as audio_synth;
 use crate::image::{fractal, gradient, noise, pattern, plasma, xc, Rgba8Image};
-use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc};
+use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc, zoneplate};
 
 /// Install every generator filter into `ctx.filters`.
 ///
@@ -27,7 +27,7 @@ use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc};
 /// - `image.xc`, `image.gradient`, `image.pattern`,
 ///   `image.fractal`, `image.plasma`, `image.noise`
 /// - `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
-///   `video.gradient_animate`
+///   `video.gradient_animate`, `video.zoneplate`
 pub fn register_filters(ctx: &mut RuntimeContext) {
     ctx.filters
         .register("audio.synth", Box::new(make_audio_synth));
@@ -52,6 +52,8 @@ pub fn register_filters(ctx: &mut RuntimeContext) {
         "video.gradient_animate",
         Box::new(make_video_gradient_animate),
     );
+    ctx.filters
+        .register("video.zoneplate", Box::new(make_video_zoneplate));
 }
 
 /// Convert a JSON `params` object into the `BTreeMap<String, String>`
@@ -213,6 +215,10 @@ fn make_video_gradient_animate(
     _inputs: &[PortSpec],
 ) -> Result<Box<dyn StreamFilter>> {
     let seq = gradient_animate::render(&params_to_query(params))?;
+    Ok(video_filter_from_seq(seq))
+}
+fn make_video_zoneplate(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
+    let seq = zoneplate::render(&params_to_query(params))?;
     Ok(video_filter_from_seq(seq))
 }
 
