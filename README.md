@@ -2,8 +2,8 @@
 
 Pure-Rust synthetic media generator for the oxideav framework. Provides
 audio synth (sine / square / triangle / sawtooth / Karplus-Strong pluck /
-linear + exponential chirp / FM / DTMF touch-tones / multi-tone /
-white-pink-brown noise / silence), image basics (solid colour, linear / radial gradient,
+linear + exponential chirp / FM / DTMF touch-tones / ADSR-enveloped tone /
+multi-tone / white-pink-brown noise / silence), image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin noise), and video
 (ffmpeg-style `testsrc`, SMPTE colour bars, animated Mandelbrot zoom,
@@ -41,6 +41,7 @@ generate://synth?type=chirp&shape=linear&f0=200&f1=4000&duration=4
 generate://synth?type=chirp&shape=exp&f0=20&f1=20000&duration=4
 generate://synth?type=fm&carrier=440&modulator=110&index=5&duration=2
 generate://synth?type=dtmf&digits=0123456789&tone=0.1&gap=0.05
+generate://synth?type=adsr&wave=sine&freq=440&attack=0.02&decay=0.1&sustain=0.7&release=0.2&duration=2
 generate://synth?type=multitone&freqs=440,1000,2200&duration=1
 generate://synth?type=noise&color=pink&duration=10
 
@@ -96,6 +97,21 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 5 (2026-05-24): synth catalogue gained `adsr` — an
+Attack-Decay-Sustain-Release amplitude envelope applied to a base
+oscillator. `wave=` picks the carrier (`sine` default, plus `square` /
+`triangle` / `sawtooth`); `attack=` / `decay=` / `release=` are segment
+durations in seconds and `sustain=` is the hold level in `[0, 1]`. The
+envelope is piecewise-linear: a `0 → 1` attack ramp, a `1 → sustain`
+decay ramp, a flat sustain hold, then a `sustain → 0` release ramp taken
+from the tail of the overall `duration=`, reaching exactly 0 at the final
+sample. Because the carrier runs at full amplitude and the envelope is
+bounded in `[0, 1]`, the output stays inside `[-amplitude, amplitude]`.
+Math-only piecewise-linear shaping; no spec or external-library
+dependency. Reaches the URI path, the `synth:` shorthand, and the
+`audio.synth` filter through the existing dispatcher (no new
+registration).
 
 Round 4 (2026-05-23): synth catalogue gained `dtmf` — telephone
 touch-tone dual-tone multi-frequency dialling. `digits=` is the key

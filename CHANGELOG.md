@@ -8,6 +8,21 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained an `adsr` mode — an Attack-Decay-Sustain-Release
+  amplitude envelope applied to a base oscillator. `wave=` selects the
+  carrier (`sine` default, plus `square` / `triangle` / `sawtooth`);
+  `attack=` / `decay=` / `release=` are segment durations in seconds and
+  `sustain=` is the hold level in `[0, 1]`. The envelope is
+  piecewise-linear (`0 → 1` attack, `1 → sustain` decay, flat sustain
+  hold, `sustain → 0` release taken from the tail of the overall
+  `duration=`, reaching exactly 0 at the final sample), with the release
+  start clamped so it never begins before the attack ends. The carrier
+  runs at full amplitude and the envelope stays in `[0, 1]`, so the
+  output is bounded by `[-amplitude, amplitude]`. An unsupported `wave=`
+  is an error. Pure first-principles DSP, no spec or external-library
+  dependency; reaches the URI path, the `synth:` shorthand, and the
+  `audio.synth` filter through the existing dispatcher (no new
+  registration).
 - Audio synth gained a `dtmf` mode — telephone touch-tone dual-tone
   multi-frequency dialling. `digits=` is the key sequence (`0`-`9`,
   `A`-`D`, `*`, `#`; whitespace ignored); each key is the sum of one

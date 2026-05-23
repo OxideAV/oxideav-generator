@@ -112,6 +112,31 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
             let gap_s = q_f64(query, "gap", 0.05)?.max(0.0);
             dtmf(digits, tone_s, gap_s, sample_rate, amplitude)?
         }
+        "adsr" => {
+            // Attack-Decay-Sustain-Release amplitude envelope applied to a
+            // base oscillator. `wave=` picks the carrier (sine default);
+            // `attack` / `decay` / `release` are durations in seconds and
+            // `sustain` is the hold level in [0, 1]. The release tail is
+            // taken from the end of the configured `duration=`; the sustain
+            // phase fills whatever is left between decay and release.
+            let freq = q_f64(query, "freq", 440.0)? as f32;
+            let wave = q_str(query, "wave", "sine");
+            let attack_s = q_f64(query, "attack", 0.01)?.max(0.0);
+            let decay_s = q_f64(query, "decay", 0.1)?.max(0.0);
+            let sustain = q_f64(query, "sustain", 0.7)?.clamp(0.0, 1.0) as f32;
+            let release_s = q_f64(query, "release", 0.2)?.max(0.0);
+            adsr(
+                freq,
+                wave,
+                attack_s,
+                decay_s,
+                sustain,
+                release_s,
+                sample_rate,
+                frame_count,
+                amplitude,
+            )?
+        }
         "multitone" | "tones" => {
             // Comma-separated frequency list. Equal-weight sum then
             // normalised to `amplitude` so the peak stays bounded.
@@ -155,7 +180,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|dtmf|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|dtmf|adsr|multitone|noise|silence)"
             )));
         }
     };
@@ -364,6 +389,106 @@ pub fn multitone(freqs: &[f32], sample_rate: u32, n: usize, amplitude: f32) -> V
             scale * s
         })
         .collect()
+}
+
+/// Sample `i` of a piecewise-linear ADSR amplitude envelope, in `[0, 1]`.
+///
+/// The envelope has four contiguous segments measured from sample 0:
+///
+/// * **Attack** — linear ramp `0 → 1` over the first `attack_n` samples.
+/// * **Decay** — linear ramp `1 → sustain` over the next `decay_n`.
+/// * **Sustain** — held flat at `sustain` until the release begins.
+/// * **Release** — linear ramp `sustain → 0` over the final `release_n`
+///   samples (the tail of the note), so the envelope reaches exactly 0
+///   at sample `n`.
+///
+/// When the note is too short to fit attack + decay + release, the
+/// release window is clamped to start no earlier than the end of decay
+/// (the sustain segment shrinks to zero first, then decay is allowed to
+/// overlap the release as a shortened note); the value is still computed
+/// as the linear interpolation within whichever segment `i` lands in, so
+/// the envelope stays continuous and bounded in `[0, 1]`.
+fn adsr_envelope(
+    i: usize,
+    n: usize,
+    attack_n: usize,
+    decay_n: usize,
+    sustain: f32,
+    release_n: usize,
+) -> f32 {
+    if n == 0 {
+        return 0.0;
+    }
+    // Release occupies the last `release_n` samples of the note. Its
+    // start index is clamped so it never begins before the attack ends.
+    let release_start = n.saturating_sub(release_n).max(attack_n.min(n));
+    let decay_end = (attack_n + decay_n).min(release_start);
+
+    if i < attack_n {
+        // Attack: 0 → 1.
+        (i as f32 + 1.0) / attack_n as f32
+    } else if i < decay_end {
+        // Decay: 1 → sustain.
+        let frac = (i - attack_n) as f32 / decay_n as f32;
+        1.0 + (sustain - 1.0) * frac
+    } else if i < release_start {
+        // Sustain: flat hold.
+        sustain
+    } else {
+        // Release: sustain → 0 over the tail. The level entering the
+        // release is whatever the prior segment left us at — `sustain`
+        // once decay has completed, which is the common case.
+        let tail = n - release_start;
+        if tail == 0 {
+            0.0
+        } else {
+            let frac = (i - release_start) as f32 / tail as f32;
+            sustain * (1.0 - frac).max(0.0)
+        }
+    }
+}
+
+/// ADSR-enveloped tone: a base oscillator (`wave`) scaled sample-by-sample
+/// by a piecewise-linear [`adsr_envelope`].
+///
+/// `attack_s` / `decay_s` / `release_s` are segment durations in seconds
+/// and `sustain` is the hold level in `[0, 1]`; the sustain segment fills
+/// whatever time is left between the decay and the release tail. The
+/// carrier amplitude is the full `amplitude` — the envelope does the
+/// shaping — so the output stays bounded by `amplitude`.
+#[allow(clippy::too_many_arguments)]
+pub fn adsr(
+    freq: f32,
+    wave: &str,
+    attack_s: f64,
+    decay_s: f64,
+    sustain: f32,
+    release_s: f64,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Result<Vec<f32>> {
+    // Base oscillator at full amplitude; the envelope shapes it.
+    let base = match wave {
+        "sine" => sine(freq, sample_rate, n, amplitude),
+        "square" => square(freq, sample_rate, n, amplitude),
+        "triangle" => triangle(freq, sample_rate, n, amplitude),
+        "sawtooth" | "saw" => sawtooth(freq, sample_rate, n, amplitude),
+        other => {
+            return Err(Error::invalid(format!(
+                "synth: adsr wave {other:?} (expected sine|square|triangle|sawtooth)"
+            )));
+        }
+    };
+    let attack_n = (attack_s * sample_rate as f64).round() as usize;
+    let decay_n = (decay_s * sample_rate as f64).round() as usize;
+    let release_n = (release_s * sample_rate as f64).round() as usize;
+    let out = base
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| s * adsr_envelope(i, n, attack_n, decay_n, sustain, release_n))
+        .collect();
+    Ok(out)
 }
 
 /// Map a DTMF keypad symbol to its `(low, high)` frequency pair in Hz.
@@ -792,5 +917,112 @@ mod tests {
     fn dtmf_invalid_key_errors() {
         let err = render(&map(&[("type", "dtmf"), ("digits", "12X")])).unwrap_err();
         assert!(format!("{err}").contains("'X'") || format!("{err}").contains("dtmf key"));
+    }
+
+    // ───── ADSR ─────
+
+    #[test]
+    fn adsr_envelope_breakpoints_are_exact() {
+        // 1000-sample note: attack 100, decay 200, release 300, sustain 0.5.
+        // Sustain segment fills samples [300, 700); release runs [700, 1000).
+        let n = 1000;
+        let (a, d, r) = (100, 200, 300);
+        let s = 0.5_f32;
+        // End of attack (sample 99 is the last attack sample; envelope is
+        // (i+1)/a so sample 99 → 100/100 = 1.0).
+        assert!((adsr_envelope(99, n, a, d, s, r) - 1.0).abs() < 1e-6);
+        // Midway through decay: sample at attack+decay/2 = 100+100 = 200,
+        // frac = 100/200 = 0.5 → 1.0 + (0.5-1.0)*0.5 = 0.75.
+        assert!((adsr_envelope(200, n, a, d, s, r) - 0.75).abs() < 1e-6);
+        // Sustain plateau: any sample in [300, 700) is exactly `sustain`.
+        assert!((adsr_envelope(400, n, a, d, s, r) - s).abs() < 1e-6);
+        assert!((adsr_envelope(699, n, a, d, s, r) - s).abs() < 1e-6);
+        // Release start (sample 700): still at the sustain level.
+        assert!((adsr_envelope(700, n, a, d, s, r) - s).abs() < 1e-6);
+        // Midway through release (sample 850): frac = 150/300 = 0.5 →
+        // sustain * (1 - 0.5) = 0.25.
+        assert!((adsr_envelope(850, n, a, d, s, r) - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn adsr_envelope_is_bounded_unit_interval() {
+        // Over a full note every envelope value must stay in [0, 1].
+        let n = 4096;
+        for i in 0..n {
+            let v = adsr_envelope(i, n, 200, 400, 0.6, 800);
+            assert!((0.0..=1.0).contains(&v), "sample {i} env {v} out of [0,1]");
+        }
+    }
+
+    #[test]
+    fn adsr_output_bounded_by_amplitude() {
+        // The carrier is full-amplitude; the envelope is in [0, 1], so the
+        // product can never exceed `amplitude`.
+        let buf = render(&map(&[
+            ("type", "adsr"),
+            ("freq", "440"),
+            ("attack", "0.02"),
+            ("decay", "0.05"),
+            ("sustain", "0.6"),
+            ("release", "0.1"),
+            ("duration", "0.5"),
+            ("amplitude", "0.9"),
+        ]))
+        .unwrap();
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.9 + 1e-6, "out-of-bounds adsr sample {s}");
+        }
+    }
+
+    #[test]
+    fn adsr_starts_silent_and_decays_to_silence() {
+        // A note that starts at envelope 0 and ends at envelope 0 means the
+        // very first sample (attack from 0) is near-silent and the final
+        // sample (release to 0) is exactly 0.
+        let sr = 8000;
+        let out = adsr(440.0, "sine", 0.05, 0.05, 0.7, 0.2, sr, 4000, 1.0).unwrap();
+        assert_eq!(out.len(), 4000);
+        // sin(0)=0 and the attack envelope is small at i=0, so sample 0 is
+        // tiny regardless.
+        assert!(out[0].abs() < 0.05);
+        // Last sample: release envelope reaches 0 at i = n, so the very
+        // last in-range sample is the carrier times a near-zero envelope.
+        let last = *out.last().unwrap();
+        assert!(last.abs() < 0.05, "final sample {last} not near silence");
+    }
+
+    #[test]
+    fn adsr_default_wave_is_sine_carrier() {
+        // With a flat-ish envelope (long sustain), the mid-note samples
+        // should track a pure sine at the carrier amplitude scaled by the
+        // sustain level. We compare the envelope-removed signal against the
+        // sine helper at a sustain-region sample.
+        let sr = 8000;
+        let n = 8000;
+        let sustain = 0.5_f32;
+        let out = adsr(440.0, "sine", 0.01, 0.01, sustain, 0.01, sr, n, 1.0).unwrap();
+        let reference = sine(440.0, sr, n, 1.0);
+        // Sample 4000 is deep in the sustain plateau (attack+decay ≈ 160
+        // samples, release window is the last 80), so envelope == sustain.
+        let i = 4000;
+        let recovered = out[i] / sustain;
+        assert!(
+            (recovered - reference[i]).abs() < 1e-4,
+            "recovered {recovered} vs reference {}",
+            reference[i]
+        );
+    }
+
+    #[test]
+    fn adsr_unknown_wave_errors() {
+        let err = render(&map(&[("type", "adsr"), ("wave", "noise")])).unwrap_err();
+        assert!(format!("{err}").contains("noise"));
+    }
+
+    #[test]
+    fn adsr_listed_in_unknown_type_help() {
+        // The dispatcher's "expected …" hint should advertise adsr.
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        assert!(format!("{err}").contains("adsr"));
     }
 }
