@@ -8,6 +8,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained a `ringmod` (`ring`) mode — classical analogue ring
+  modulation: `amplitude · sin(2π·f1·t) · sin(2π·f2·t)`. By the
+  prosthaphaeresis identity `sin(α)·sin(β) = ½·[cos(α−β) − cos(α+β)]`
+  the spectrum collapses to the sum and difference tones `f1 ± f2` at
+  half amplitude; the carrier components at `f1` and `f2` are fully
+  suppressed, which is what distinguishes ring modulation from
+  amplitude modulation. Worst case `|sin · sin| ≤ 1` so the output is
+  bounded by `amplitude` for every `(f1, f2)` and every sample rate.
+  Pure first-principles DSP, no spec or external-library dependency;
+  exposed through the URI path
+  (`generate://synth?type=ringmod&f1=…&f2=…`), the `synth:` shorthand,
+  and the `audio.synth` filter through the existing dispatcher (no new
+  registration).
 - Audio synth gained an `adsr` mode — an Attack-Decay-Sustain-Release
   amplitude envelope applied to a base oscillator. `wave=` selects the
   carrier (`sine` default, plus `square` / `triangle` / `sawtooth`);

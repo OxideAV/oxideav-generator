@@ -99,6 +99,21 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
                 amplitude,
             )
         }
+        "ringmod" | "ring" => {
+            // Classical analogue ring modulation:
+            // amplitude * sin(2π·f1·t) * sin(2π·f2·t)
+            //
+            // The product of two sines is the prosthaphaeresis identity
+            //   sin(α) · sin(β) = ½·[cos(α − β) − cos(α + β)],
+            // so the output is the sum and difference frequencies
+            // (f1 ± f2) at half amplitude each. The carrier is fully
+            // suppressed (no f1 or f2 component) — this is what makes
+            // ring-modulation distinct from amplitude modulation
+            // (1 + m·sin(fm·t))·sin(fc·t), which keeps the carrier.
+            let f1 = q_f64(query, "f1", 440.0)? as f32;
+            let f2 = q_f64(query, "f2", 60.0)? as f32;
+            ringmod(f1, f2, sample_rate, frame_count, amplitude)
+        }
         "dtmf" => {
             // Touch-tone keypad: each key is the sum of one low-group and
             // one high-group sine (ITU-T Q.23 / Q.24 DTMF layout).
@@ -180,7 +195,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|dtmf|adsr|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|ringmod|dtmf|adsr|multitone|noise|silence)"
             )));
         }
     };
@@ -366,6 +381,34 @@ pub fn fm(
             let mod_phase = TAU * modulator * t;
             let phase = TAU * carrier * t + index * mod_phase.sin();
             amplitude * phase.sin()
+        })
+        .collect()
+}
+
+/// Ring modulation: `amplitude · sin(2π·f1·t) · sin(2π·f2·t)`.
+///
+/// The product of two sines is, by the prosthaphaeresis identity,
+///
+/// ```text
+/// sin(α) · sin(β) = ½·[cos(α − β) − cos(α + β)],
+/// ```
+///
+/// so the spectrum consists of just the sum and difference tones
+/// `f1 ± f2`, each at half amplitude. The carrier components at `f1`
+/// and `f2` are entirely suppressed — that is the distinguishing
+/// feature of ring modulation versus amplitude modulation, which keeps
+/// the carrier.
+///
+/// Worst case `|sin(α)| · |sin(β)| = 1`, so the output stays bounded
+/// by `amplitude` for every `(f1, f2)` and every sample rate.
+pub fn ringmod(f1: f32, f2: f32, sample_rate: u32, n: usize, amplitude: f32) -> Vec<f32> {
+    let dt = 1.0 / sample_rate as f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 * dt;
+            let a = (TAU * f1 * t).sin();
+            let b = (TAU * f2 * t).sin();
+            amplitude * a * b
         })
         .collect()
 }
@@ -783,6 +826,85 @@ mod tests {
         for s in &buf.samples {
             assert!(s.abs() <= 0.8 + 1e-6);
         }
+    }
+
+    // ───── ring modulation ─────
+
+    #[test]
+    fn ringmod_matches_prosthaphaeresis_identity() {
+        // sin(α) · sin(β) = ½·[cos(α − β) − cos(α + β)]. Build the RHS
+        // sample-by-sample and compare against the LHS that ringmod()
+        // produces.
+        let sr = 8000;
+        let n = 1024;
+        let f1 = 440.0_f32;
+        let f2 = 60.0_f32;
+        let amp = 0.8_f32;
+        let got = ringmod(f1, f2, sr, n, amp);
+        let dt = 1.0 / sr as f32;
+        for (i, &g) in got.iter().enumerate() {
+            let t = i as f32 * dt;
+            let want = 0.5 * amp * ((TAU * (f1 - f2) * t).cos() - (TAU * (f1 + f2) * t).cos());
+            // f32 trig drift over ~1024 samples × 500 Hz × TAU of accumulated
+            // phase puts the realistic floor for the LHS-vs-RHS comparison
+            // around 1e-4 — well below the half-amplitude (0.4) signal level.
+            assert!((g - want).abs() < 1e-4, "sample {i}: got {g}, want {want}");
+        }
+    }
+
+    #[test]
+    fn ringmod_starts_at_zero() {
+        // sin(0)·sin(0) = 0 regardless of f1, f2, amplitude.
+        let buf = render(&map(&[
+            ("type", "ringmod"),
+            ("f1", "440"),
+            ("f2", "60"),
+            ("duration", "0.05"),
+            ("amplitude", "1"),
+        ]))
+        .unwrap();
+        assert!(buf.samples[0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn ringmod_output_bounded_by_amplitude() {
+        // |sin(α)| · |sin(β)| ≤ 1 ⇒ output bounded by amplitude.
+        let buf = render(&map(&[
+            ("type", "ringmod"),
+            ("f1", "440"),
+            ("f2", "60"),
+            ("duration", "0.2"),
+            ("amplitude", "0.7"),
+        ]))
+        .unwrap();
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.7 + 1e-6, "out-of-bounds ringmod sample {s}");
+        }
+    }
+
+    #[test]
+    fn ringmod_equal_frequencies_is_half_minus_half_cos_2f() {
+        // f1 == f2 == f ⇒ sin²(2πft) = ½ − ½·cos(4πft). DC offset 0.5·amp,
+        // and a single tone at 2f at amplitude amp/2. We just check the
+        // mean over an integer number of (2f) periods is ≈ amp/2.
+        let sr = 8000;
+        let f = 200.0_f32;
+        // 2f period at 8000 Hz = 8000 / 400 = 20 samples; pick 400 samples
+        // = exactly 20 full periods of the 2f component.
+        let n = 400;
+        let amp = 1.0_f32;
+        let out = ringmod(f, f, sr, n, amp);
+        let mean: f32 = out.iter().copied().sum::<f32>() / n as f32;
+        assert!(
+            (mean - 0.5).abs() < 1e-3,
+            "mean of sin²(2πft) over an integer number of periods should be 0.5, got {mean}"
+        );
+    }
+
+    #[test]
+    fn ringmod_listed_in_unknown_type_help() {
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        assert!(format!("{err}").contains("ringmod"));
     }
 
     // ───── multitone ─────
