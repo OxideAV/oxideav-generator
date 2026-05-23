@@ -8,6 +8,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained a `dtmf` mode — telephone touch-tone dual-tone
+  multi-frequency dialling. `digits=` is the key sequence (`0`-`9`,
+  `A`-`D`, `*`, `#`; whitespace ignored); each key is the sum of one
+  low-group (697/770/852/941 Hz) and one high-group
+  (1209/1336/1477/1633 Hz) sine, both at half amplitude so an aligned
+  peak stays inside `[-amplitude, amplitude]`. Per-key on/off timing is
+  `tone=` / `gap=` (seconds); the overall `duration=` is ignored — the
+  length is derived from the dialled string. An unrecognised key is an
+  error rather than silently emitting nothing. Frequency layout follows
+  the ITU-T Q.23 / Q.24 keypad; pure first-principles DSP, no spec or
+  external-library dependency. Exposed via the existing `synth:`
+  shorthand and `audio.synth` filter (no new registration).
 - Audio synth gained three modes:
   - `chirp` / `sweep` — linear or exponential frequency sweep
     between `f0` and `f1`; phase is integrated sample-by-sample so

@@ -99,6 +99,19 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
                 amplitude,
             )
         }
+        "dtmf" => {
+            // Touch-tone keypad: each key is the sum of one low-group and
+            // one high-group sine (ITU-T Q.23 / Q.24 DTMF layout).
+            //   `digits=` is the key sequence (0-9, A-D, *, #).
+            //   `tone=` is the per-key on-duration in seconds; `gap=` is
+            //   the silent inter-key duration. The overall `duration=`
+            //   parameter is ignored for dtmf — the length is derived
+            //   from the digit sequence and the tone/gap timing.
+            let digits = q_str(query, "digits", "0");
+            let tone_s = q_f64(query, "tone", 0.1)?.max(0.0);
+            let gap_s = q_f64(query, "gap", 0.05)?.max(0.0);
+            dtmf(digits, tone_s, gap_s, sample_rate, amplitude)?
+        }
         "multitone" | "tones" => {
             // Comma-separated frequency list. Equal-weight sum then
             // normalised to `amplitude` so the peak stays bounded.
@@ -142,7 +155,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|dtmf|multitone|noise|silence)"
             )));
         }
     };
@@ -351,6 +364,85 @@ pub fn multitone(freqs: &[f32], sample_rate: u32, n: usize, amplitude: f32) -> V
             scale * s
         })
         .collect()
+}
+
+/// Map a DTMF keypad symbol to its `(low, high)` frequency pair in Hz.
+///
+/// The four low-group rows are 697 / 770 / 852 / 941 Hz; the four
+/// high-group columns are 1209 / 1336 / 1477 / 1633 Hz. Each key on the
+/// 4×4 keypad selects exactly one row and one column (ITU-T Q.23 / Q.24
+/// dual-tone multi-frequency layout). `*` and `#` are accepted as the
+/// star and pound keys; `A`–`D` (case-insensitive) are the fourth
+/// column. Returns `None` for any other symbol.
+pub fn dtmf_freqs(key: char) -> Option<(f32, f32)> {
+    const LOW: [f32; 4] = [697.0, 770.0, 852.0, 941.0];
+    const HIGH: [f32; 4] = [1209.0, 1336.0, 1477.0, 1633.0];
+    // (row, col) on the standard keypad:
+    //        1209  1336  1477  1633
+    //  697 :  1     2     3     A
+    //  770 :  4     5     6     B
+    //  852 :  7     8     9     C
+    //  941 :  *     0     #     D
+    let (row, col) = match key {
+        '1' => (0, 0),
+        '2' => (0, 1),
+        '3' => (0, 2),
+        'A' | 'a' => (0, 3),
+        '4' => (1, 0),
+        '5' => (1, 1),
+        '6' => (1, 2),
+        'B' | 'b' => (1, 3),
+        '7' => (2, 0),
+        '8' => (2, 1),
+        '9' => (2, 2),
+        'C' | 'c' => (2, 3),
+        '*' => (3, 0),
+        '0' => (3, 1),
+        '#' => (3, 2),
+        'D' | 'd' => (3, 3),
+        _ => return None,
+    };
+    Some((LOW[row], HIGH[col]))
+}
+
+/// Render a sequence of DTMF key presses.
+///
+/// Each key in `digits` produces `tone_s` seconds of its dual-tone
+/// signal (low + high sine, each at half `amplitude` so an aligned
+/// peak stays inside `[-amplitude, amplitude]`) followed by `gap_s`
+/// seconds of silence. Whitespace in `digits` is ignored. An
+/// unrecognised symbol is an error so a typo in the dialled string
+/// doesn't silently emit nothing.
+pub fn dtmf(
+    digits: &str,
+    tone_s: f64,
+    gap_s: f64,
+    sample_rate: u32,
+    amplitude: f32,
+) -> Result<Vec<f32>> {
+    let tone_n = (tone_s * sample_rate as f64).round() as usize;
+    let gap_n = (gap_s * sample_rate as f64).round() as usize;
+    let dt = 1.0 / sample_rate as f32;
+    // Half-amplitude per partial so the worst case (both partials at
+    // their peak simultaneously) is bounded by `amplitude`.
+    let half = amplitude * 0.5;
+    let mut out = Vec::new();
+    for key in digits.chars() {
+        if key.is_whitespace() {
+            continue;
+        }
+        let (low, high) = dtmf_freqs(key).ok_or_else(|| {
+            Error::invalid(format!(
+                "synth: dtmf key {key:?} (expected 0-9, A-D, * or #)"
+            ))
+        })?;
+        for i in 0..tone_n {
+            let t = i as f32 * dt;
+            out.push(half * (TAU * low * t).sin() + half * (TAU * high * t).sin());
+        }
+        out.extend(std::iter::repeat(0.0).take(gap_n));
+    }
+    Ok(out)
 }
 
 /// White noise — uniform `[-amplitude, amplitude]`.
@@ -609,5 +701,96 @@ mod tests {
     fn multitone_negative_freq_errors() {
         let err = render(&map(&[("type", "multitone"), ("freqs", "440,-220")])).unwrap_err();
         assert!(format!("{err}").contains("-220"));
+    }
+
+    // ───── DTMF ─────
+
+    #[test]
+    fn dtmf_keypad_frequency_pairs() {
+        // Spot-check the corners + centre of the 4×4 keypad against the
+        // canonical ITU-T low/high group frequencies.
+        assert_eq!(dtmf_freqs('1'), Some((697.0, 1209.0)));
+        assert_eq!(dtmf_freqs('3'), Some((697.0, 1477.0)));
+        assert_eq!(dtmf_freqs('5'), Some((770.0, 1336.0)));
+        assert_eq!(dtmf_freqs('0'), Some((941.0, 1336.0)));
+        assert_eq!(dtmf_freqs('*'), Some((941.0, 1209.0)));
+        assert_eq!(dtmf_freqs('#'), Some((941.0, 1477.0)));
+        assert_eq!(dtmf_freqs('A'), Some((697.0, 1633.0)));
+        assert_eq!(dtmf_freqs('D'), Some((941.0, 1633.0)));
+        // Lowercase column letters map to the same column.
+        assert_eq!(dtmf_freqs('a'), dtmf_freqs('A'));
+        assert_eq!(dtmf_freqs('d'), dtmf_freqs('D'));
+        // Anything off the keypad is None.
+        assert_eq!(dtmf_freqs('e'), None);
+        assert_eq!(dtmf_freqs('!'), None);
+    }
+
+    #[test]
+    fn dtmf_length_is_tone_plus_gap_per_key() {
+        // 3 keys × (0.1s tone + 0.05s gap) at 8000 Hz =
+        // 3 × (800 + 400) = 3600 samples.
+        let buf = render(&map(&[
+            ("type", "dtmf"),
+            ("digits", "123"),
+            ("tone", "0.1"),
+            ("gap", "0.05"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.samples.len(), 3600);
+    }
+
+    #[test]
+    fn dtmf_whitespace_in_digits_is_ignored() {
+        // A space between keys must not add samples or error out.
+        let spaced = render(&map(&[
+            ("type", "dtmf"),
+            ("digits", "1 2"),
+            ("tone", "0.1"),
+            ("gap", "0.05"),
+        ]))
+        .unwrap();
+        let dense = render(&map(&[
+            ("type", "dtmf"),
+            ("digits", "12"),
+            ("tone", "0.1"),
+            ("gap", "0.05"),
+        ]))
+        .unwrap();
+        assert_eq!(spaced.samples.len(), dense.samples.len());
+    }
+
+    #[test]
+    fn dtmf_tone_is_sum_of_low_and_high() {
+        // For key '1' the signal is half·sin(2π·697·t) + half·sin(2π·1209·t).
+        // Sample 0 is sin(0)+sin(0)=0; verify against a hand-built
+        // reference for the first few samples.
+        let sr = 8000;
+        let amp = 0.8;
+        let half = amp * 0.5;
+        let dt = 1.0 / sr as f32;
+        let buf = dtmf("1", 0.01, 0.0, sr, amp).unwrap();
+        for (i, &got) in buf.iter().take(16).enumerate() {
+            let t = i as f32 * dt;
+            let want = half * (TAU * 697.0 * t).sin() + half * (TAU * 1209.0 * t).sin();
+            assert!(
+                (got - want).abs() < 1e-6,
+                "sample {i}: got {got}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn dtmf_peak_bounded_by_amplitude() {
+        let buf = dtmf("0123456789ABCD*#", 0.02, 0.0, 8000, 1.0).unwrap();
+        for s in &buf {
+            // Two half-amplitude sines → worst case 1.0.
+            assert!(s.abs() <= 1.0 + 1e-6, "out-of-bounds dtmf sample {s}");
+        }
+    }
+
+    #[test]
+    fn dtmf_invalid_key_errors() {
+        let err = render(&map(&[("type", "dtmf"), ("digits", "12X")])).unwrap_err();
+        assert!(format!("{err}").contains("'X'") || format!("{err}").contains("dtmf key"));
     }
 }

@@ -2,8 +2,8 @@
 
 Pure-Rust synthetic media generator for the oxideav framework. Provides
 audio synth (sine / square / triangle / sawtooth / Karplus-Strong pluck /
-linear + exponential chirp / FM / multi-tone / white-pink-brown noise /
-silence), image basics (solid colour, linear / radial gradient,
+linear + exponential chirp / FM / DTMF touch-tones / multi-tone /
+white-pink-brown noise / silence), image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin noise), and video
 (ffmpeg-style `testsrc`, SMPTE colour bars, animated Mandelbrot zoom,
@@ -40,6 +40,7 @@ generate://synth?type=pluck&freq=440&decay=0.99&duration=3
 generate://synth?type=chirp&shape=linear&f0=200&f1=4000&duration=4
 generate://synth?type=chirp&shape=exp&f0=20&f1=20000&duration=4
 generate://synth?type=fm&carrier=440&modulator=110&index=5&duration=2
+generate://synth?type=dtmf&digits=0123456789&tone=0.1&gap=0.05
 generate://synth?type=multitone&freqs=440,1000,2200&duration=1
 generate://synth?type=noise&color=pink&duration=10
 
@@ -95,6 +96,16 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 4 (2026-05-23): synth catalogue gained `dtmf` — telephone
+touch-tone dual-tone multi-frequency dialling. `digits=` is the key
+sequence (`0`-`9`, `A`-`D`, `*`, `#`); each key is the sum of one
+low-group (697/770/852/941 Hz) and one high-group (1209/1336/1477/1633
+Hz) sine, both at half amplitude so an aligned peak stays bounded. Per-key
+on/off timing comes from `tone=` / `gap=` (seconds); the overall
+`duration=` is ignored — the length is derived from the dialled string.
+Frequency layout follows the ITU-T Q.23 / Q.24 keypad. Math-only, no
+spec dependency.
 
 Round 3 (2026-05-20): synth catalogue grew chirp / FM / multitone
 modes (linear + exponential frequency sweeps; classical 2-operator

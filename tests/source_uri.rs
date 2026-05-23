@@ -270,6 +270,28 @@ fn synth_multitone_returns_audio_frames() {
     assert_eq!(a.samples, 80);
 }
 
+#[test]
+fn synth_dtmf_returns_audio_frames_with_sequence_length() {
+    // Two keys × (0.1 s tone + 0.05 s gap) at 8000 Hz =
+    // 2 × (800 + 400) = 2400 mono samples × 2 bytes = 4800 bytes.
+    // `duration=` is intentionally absent — dtmf derives its length
+    // from the dialled string + tone/gap timing.
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://synth?type=dtmf&digits=12&tone=0.1&gap=0.05",
+    );
+    let p = src.params();
+    assert_eq!(p.media_type, MediaType::Audio);
+    assert_eq!(p.codec_id.as_str(), "pcm_s16le");
+    let frames = drain(&mut *src).unwrap();
+    let Frame::Audio(a) = &frames[0] else {
+        panic!();
+    };
+    assert_eq!(a.samples, 2400);
+    assert_eq!(a.data[0].len(), 4800);
+}
+
 // ---------------------------- Errors ----------------------------
 
 #[test]
