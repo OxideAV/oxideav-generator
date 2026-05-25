@@ -34,8 +34,9 @@
 //!
 //! - **Audio** — sine / square / triangle / sawtooth / pluck (Karplus-
 //!   Strong) / chirp (linear or exponential sweep) / fm (frequency
-//!   modulation) / dtmf (telephone touch-tones) / multitone (sum of
-//!   sines) / white-pink-brown noise / silence.
+//!   modulation) / dtmf (telephone touch-tones) / formant (Klatt-style
+//!   two-formant vowel synthesizer) / multitone (sum of sines) /
+//!   white-pink-brown noise / silence.
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,
 //!   checkerboard / horizontal / vertical / diagonal patterns.
 //! - **Procedural images** — Mandelbrot + Julia fractals, plasma

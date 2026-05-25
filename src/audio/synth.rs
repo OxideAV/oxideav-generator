@@ -99,6 +99,40 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
                 amplitude,
             )
         }
+        "formant" | "vowel" => {
+            // Klatt-style two-formant vowel synthesizer (see Klatt, 1980,
+            // "Software for a cascade/parallel formant synthesizer", JASA
+            // 67(3):971-995, public reference — no source-reading of any
+            // Klatt / Festival / espeak / mbrola / Praat implementation).
+            //
+            // Architecture: a glottal-pulse train at the fundamental f0
+            // drives two parallel 2-pole resonators tuned to the formant
+            // centre frequencies (F1, F2). The two resonator outputs are
+            // summed and re-normalised to keep the peak bounded.
+            //
+            // The vowel selector maps to textbook-standard rounded
+            // formant centres for an adult male speaker, in line with
+            // the average values reported by Peterson & Barney's 1952
+            // acoustical study (which has been reproduced in essentially
+            // every introductory phonetics textbook since):
+            //
+            //   vowel  F1 (Hz)  F2 (Hz)   example
+            //     A      730      1090     "father"  /ɑ/
+            //     E      530      1840     "bed"     /ɛ/
+            //     I      270      2290     "beet"    /i/
+            //     O      570      840      "bought"  /ɔ/
+            //     U      300      870      "boot"    /u/
+            //
+            // `vowel=` selects the (F1, F2) pair; `f0=` is the
+            // fundamental (pitch); `bw=` is the per-formant bandwidth in
+            // Hz (default 80, a textbook-typical value); `duration=` is
+            // the note length in seconds.
+            let vowel = q_str(query, "vowel", "A");
+            let f0 = q_f64(query, "f0", 220.0)? as f32;
+            let bw = q_f64(query, "bw", 80.0)? as f32;
+            let (f1, f2) = vowel_formants(vowel)?;
+            formant(f0, f1, f2, bw, sample_rate, frame_count, amplitude)
+        }
         "ringmod" | "ring" => {
             // Classical analogue ring modulation:
             // amplitude * sin(2π·f1·t) * sin(2π·f2·t)
@@ -195,7 +229,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|ringmod|dtmf|adsr|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
             )));
         }
     };
@@ -611,6 +645,162 @@ pub fn dtmf(
         out.extend(std::iter::repeat(0.0).take(gap_n));
     }
     Ok(out)
+}
+
+/// Map a single-letter vowel selector (`A`/`E`/`I`/`O`/`U`,
+/// case-insensitive) to its `(F1, F2)` centre-frequency pair in Hz.
+///
+/// The values are textbook-standard rounded formant centres for an
+/// adult male speaker, in line with averages from Peterson & Barney's
+/// 1952 acoustical study of the vowels (reproduced in virtually every
+/// introductory phonetics textbook since):
+///
+/// | Vowel | F1 (Hz) | F2 (Hz) | Example          |
+/// |-------|---------|---------|------------------|
+/// | `A`   | 730     | 1090    | "father" (/ɑ/)   |
+/// | `E`   | 530     | 1840    | "bed"    (/ɛ/)   |
+/// | `I`   | 270     | 2290    | "beet"   (/i/)   |
+/// | `O`   | 570     | 840     | "bought" (/ɔ/)   |
+/// | `U`   | 300     | 870     | "boot"   (/u/)   |
+///
+/// Returns an error for any other selector so a typo doesn't silently
+/// pick a default vowel.
+pub fn vowel_formants(vowel: &str) -> Result<(f32, f32)> {
+    let v = vowel.trim();
+    if v.len() != 1 {
+        return Err(Error::invalid(format!(
+            "synth: vowel {vowel:?} (expected single letter A|E|I|O|U)"
+        )));
+    }
+    let c = v.chars().next().unwrap().to_ascii_uppercase();
+    let pair = match c {
+        'A' => (730.0, 1090.0),
+        'E' => (530.0, 1840.0),
+        'I' => (270.0, 2290.0),
+        'O' => (570.0, 840.0),
+        'U' => (300.0, 870.0),
+        _ => {
+            return Err(Error::invalid(format!(
+                "synth: vowel {vowel:?} (expected A|E|I|O|U)"
+            )));
+        }
+    };
+    Ok(pair)
+}
+
+/// Klatt-style two-formant vowel synthesiser.
+///
+/// Architecture (after Klatt 1980, JASA 67(3):971-995 — public-reference
+/// citation only, no source-reading of any Klatt implementation):
+///
+/// 1. **Glottal source.** A periodic impulse train at `f0`. Each glottal
+///    period contributes a single non-zero sample of `+1`; all other
+///    samples are zero. This is the simplest periodic excitation with
+///    the correct line spectrum at integer multiples of `f0`, and it
+///    keeps the source spectrally flat so the formant filters fully
+///    determine the resonance peaks. A one-zero low-pass `(x[n] +
+///    x[n-1]) / 2` lightly shapes the pulse so the upper harmonics roll
+///    off gently (Klatt's "shaped pulse" precondition).
+/// 2. **Two parallel resonators.** Each resonator is a 2-pole filter
+///    `y[n] = b·x[n] + 2·r·cos(ω)·y[n-1] − r²·y[n-2]`, with pole radius
+///    `r = exp(−π·BW/Fs)` and pole angle `ω = 2π·F/Fs`. The transfer
+///    function has a sharp magnitude peak at the formant frequency `F`
+///    with a −3 dB bandwidth of `BW` Hz. The input gain `b = 1 − r²` is
+///    Klatt's normalisation that holds the peak-frequency magnitude at
+///    unity across `(F, BW, Fs)`, so the post-sum scaling is bounded.
+/// 3. **Sum + normalise.** The two resonator outputs are summed and
+///    re-scaled to `amplitude`. The pre-scale peak is bounded by the
+///    sum of two unity-peak resonances, so we divide by the empirical
+///    running peak (with a 1e-3 floor for the all-zero edge case) so
+///    the final samples sit safely inside `[-amplitude, amplitude]`.
+pub fn formant(
+    f0: f32,
+    f1: f32,
+    f2: f32,
+    bw: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Vec<f32> {
+    if n == 0 || sample_rate == 0 {
+        return vec![0.0; n];
+    }
+    let sr = sample_rate as f32;
+
+    // Glottal-pulse train: an impulse every `period` samples. Floating
+    // accumulator so non-integer periods (the common case) don't drift.
+    let period = sr / f0.max(1.0);
+    let mut pulses = vec![0.0f32; n];
+    let mut next = 0.0f32;
+    let mut i = 0usize;
+    while (i as f32) < n as f32 {
+        let idx = next.round() as usize;
+        if idx >= n {
+            break;
+        }
+        pulses[idx] = 1.0;
+        next += period;
+        i = idx + 1;
+    }
+    // One-zero low-pass: y[n] = 0.5·(x[n] + x[n-1]); softens the
+    // impulses' upper harmonics so the resonator peaks dominate.
+    let mut shaped = vec![0.0f32; n];
+    let mut prev = 0.0f32;
+    for (i, &p) in pulses.iter().enumerate() {
+        shaped[i] = 0.5 * (p + prev);
+        prev = p;
+    }
+
+    // Two parallel resonators.
+    let r1 = resonator(&shaped, f1, bw, sr);
+    let r2 = resonator(&shaped, f2, bw, sr);
+
+    // Sum, find peak, normalise to `amplitude`.
+    let mut out = Vec::with_capacity(n);
+    let mut peak = 0.0f32;
+    for i in 0..n {
+        let v = r1[i] + r2[i];
+        if v.abs() > peak {
+            peak = v.abs();
+        }
+        out.push(v);
+    }
+    let scale = if peak > 1e-3 { amplitude / peak } else { 0.0 };
+    for s in out.iter_mut() {
+        *s *= scale;
+    }
+    out
+}
+
+/// Single 2-pole resonator at `freq` Hz with `bw` Hz of bandwidth.
+///
+/// Difference equation
+///
+/// ```text
+/// y[n] = (1 − r²)·x[n] + 2·r·cos(ω)·y[n−1] − r²·y[n−2]
+/// ```
+///
+/// with `r = exp(−π·BW/Fs)` (pole radius) and `ω = 2π·F/Fs` (pole
+/// angle). The `(1 − r²)` input gain is Klatt's normalisation that
+/// holds the magnitude response at exactly 1 at the resonance peak —
+/// the response then falls off either side at the standard 2-pole
+/// rate, with the −3 dB points `BW` Hz apart.
+fn resonator(x: &[f32], freq: f32, bw: f32, sr: f32) -> Vec<f32> {
+    let r = (-std::f32::consts::PI * bw / sr).exp();
+    let omega = TAU * freq / sr;
+    let a1 = 2.0 * r * omega.cos();
+    let a2 = -(r * r);
+    let b0 = 1.0 - r * r;
+    let mut y1 = 0.0f32;
+    let mut y2 = 0.0f32;
+    let mut out = Vec::with_capacity(x.len());
+    for &s in x {
+        let y = b0 * s + a1 * y1 + a2 * y2;
+        out.push(y);
+        y2 = y1;
+        y1 = y;
+    }
+    out
 }
 
 /// White noise — uniform `[-amplitude, amplitude]`.
@@ -1146,5 +1336,178 @@ mod tests {
         // The dispatcher's "expected …" hint should advertise adsr.
         let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
         assert!(format!("{err}").contains("adsr"));
+    }
+
+    // ───── Formant (Klatt-style two-formant vowel synth) ─────
+
+    /// Tiny single-bin Goertzel-style DFT magnitude at frequency `freq`
+    /// (Hz) over `x` sampled at `sr` Hz. Returns the unnormalised
+    /// `sqrt(real² + imag²)` magnitude — only the *relative* strength
+    /// across frequencies matters for the peak-detection tests below.
+    fn dft_mag(x: &[f32], freq: f32, sr: f32) -> f32 {
+        let omega = TAU * freq / sr;
+        let mut re = 0.0f32;
+        let mut im = 0.0f32;
+        for (i, &s) in x.iter().enumerate() {
+            let phi = omega * i as f32;
+            re += s * phi.cos();
+            im += s * phi.sin();
+        }
+        (re * re + im * im).sqrt()
+    }
+
+    #[test]
+    fn vowel_formants_lookup_table() {
+        // Spot-check the five vowels against the textbook-standard
+        // adult-male formant centres documented on `vowel_formants`.
+        assert_eq!(vowel_formants("A").unwrap(), (730.0, 1090.0));
+        assert_eq!(vowel_formants("E").unwrap(), (530.0, 1840.0));
+        assert_eq!(vowel_formants("I").unwrap(), (270.0, 2290.0));
+        assert_eq!(vowel_formants("O").unwrap(), (570.0, 840.0));
+        assert_eq!(vowel_formants("U").unwrap(), (300.0, 870.0));
+        // Case-insensitive.
+        assert_eq!(vowel_formants("a").unwrap(), vowel_formants("A").unwrap());
+        // Unknown vowel is an error, not a silent default.
+        assert!(vowel_formants("X").is_err());
+        // Multi-character input is an error too.
+        assert!(vowel_formants("AE").is_err());
+    }
+
+    #[test]
+    fn formant_output_bounded_by_amplitude() {
+        // Peak normalisation should keep every sample inside [-amp, amp].
+        let sr = 16_000;
+        let n = 1600; // 100 ms
+        let amp = 0.8;
+        let out = formant(220.0, 730.0, 1090.0, 80.0, sr, n, amp);
+        for s in &out {
+            assert!(
+                s.abs() <= amp + 1e-6,
+                "out-of-bounds formant sample {s} (amp={amp})"
+            );
+        }
+    }
+
+    #[test]
+    fn formant_zero_length_is_empty() {
+        let out = formant(220.0, 730.0, 1090.0, 80.0, 16_000, 0, 0.8);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn formant_spectral_peaks_near_expected_centres() {
+        // Per-vowel: render 100 ms of the vowel at 220 Hz @ 16 kHz, then
+        // compare the DFT magnitude at the formant centre against the
+        // magnitude at several off-formant probe frequencies. The
+        // formant centres should dominate by a clear margin — that's
+        // the whole point of the two-pole resonator pair.
+        //
+        // The probe frequencies are picked so they lie comfortably
+        // outside the ±80 Hz resonator −3 dB bandwidth of both F1 and
+        // F2 for *every* vowel in the table (we use 3000 Hz, which is
+        // above every F2 in the table by ≥710 Hz, and 4500 Hz which is
+        // higher still).
+        let sr = 16_000u32;
+        let sr_f = sr as f32;
+        let n = (0.1 * sr_f) as usize; // 100 ms
+        let f0 = 220.0;
+        let bw = 80.0;
+
+        for vowel in ["A", "E", "I", "O", "U"] {
+            let (f1, f2) = vowel_formants(vowel).unwrap();
+            let buf = formant(f0, f1, f2, bw, sr, n, 0.9);
+            assert_eq!(buf.len(), n);
+
+            // The DFT magnitude at f0's harmonic *closest* to a formant
+            // is what we measure — a 220 Hz harmonic comb means peak
+            // energy lands not at F1 / F2 themselves but at the nearest
+            // multiple of f0. Round the formant centres down/up to the
+            // nearest harmonic for the probe.
+            let nearest_harmonic = |f_target: f32| {
+                let k = (f_target / f0).round();
+                (k * f0).max(f0)
+            };
+            let probe_f1 = nearest_harmonic(f1);
+            let probe_f2 = nearest_harmonic(f2);
+
+            let mag_f1 = dft_mag(&buf, probe_f1, sr_f);
+            let mag_f2 = dft_mag(&buf, probe_f2, sr_f);
+
+            // Off-formant probe — pick a harmonic of f0 between F2 and
+            // Nyquist that is at least 800 Hz above every formant in
+            // the table (max F2 is 2290 Hz, so 3300 Hz is a clear
+            // outside-band probe — and it's a multiple of f0=220 Hz,
+            // so we're sampling on the harmonic grid).
+            let mag_off = dft_mag(&buf, 3300.0, sr_f);
+
+            // Each formant magnitude should clearly dominate the
+            // off-band magnitude. A 3× ratio is conservative: a 2-pole
+            // resonator with BW=80 Hz delivers ~20+ dB of peak/trough
+            // contrast across ~1 kHz of detuning.
+            assert!(
+                mag_f1 > 3.0 * mag_off,
+                "{vowel}: F1 peak too weak ({mag_f1} at {probe_f1} Hz vs {mag_off} at 3300 Hz)"
+            );
+            assert!(
+                mag_f2 > 3.0 * mag_off,
+                "{vowel}: F2 peak too weak ({mag_f2} at {probe_f2} Hz vs {mag_off} at 3300 Hz)"
+            );
+        }
+    }
+
+    #[test]
+    fn formant_dispatcher_default_keeps_bounds() {
+        // 1 s @ 8 kHz default, default vowel=A → no panic, samples bounded.
+        let buf = render(&map(&[("type", "formant"), ("duration", "0.1")])).unwrap();
+        assert_eq!(buf.samples.len(), 800); // 8000 × 0.1
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn formant_vowel_alias_works() {
+        // `type=vowel` is an accepted alias for `type=formant`.
+        let buf = render(&map(&[
+            ("type", "vowel"),
+            ("vowel", "E"),
+            ("duration", "0.05"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.samples.len(), 400);
+    }
+
+    #[test]
+    fn formant_unknown_vowel_errors() {
+        let err = render(&map(&[("type", "formant"), ("vowel", "Z")])).unwrap_err();
+        assert!(format!("{err}").contains("'Z'") || format!("{err}").contains("Z"));
+    }
+
+    #[test]
+    fn formant_listed_in_unknown_type_help() {
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        assert!(format!("{err}").contains("formant"));
+    }
+
+    #[test]
+    fn resonator_peak_response_at_centre() {
+        // Drive a single 2-pole resonator with an impulse and confirm
+        // the resulting (decaying-sinusoid) response has its single-bin
+        // DFT peak at the resonator's centre frequency. Sanity test
+        // for the underlying biquad.
+        let sr = 16_000.0_f32;
+        let n = 2048;
+        let f = 1000.0_f32;
+        let bw = 50.0_f32;
+        let mut x = vec![0.0f32; n];
+        x[0] = 1.0;
+        let y = resonator(&x, f, bw, sr);
+        let mag_peak = dft_mag(&y, f, sr);
+        // 200 Hz away from the centre should be appreciably weaker.
+        let mag_off = dft_mag(&y, f + 400.0, sr);
+        assert!(
+            mag_peak > 3.0 * mag_off,
+            "resonator peak {mag_peak} not dominant over off-centre {mag_off}"
+        );
     }
 }

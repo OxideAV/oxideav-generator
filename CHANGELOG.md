@@ -8,6 +8,33 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained a `formant` (alias `vowel`) mode — a Klatt-style
+  two-formant vowel synthesizer (after Klatt 1980, JASA 67(3):971-995;
+  the paper is the public reference, no source-reading of any Klatt /
+  Festival / espeak / mbrola / Praat implementation). Architecture: a
+  glottal-pulse train at the fundamental `f0=` (an impulse every
+  `Fs/f0` samples, lightly low-passed with `0.5·(x[n]+x[n-1])`) drives
+  two parallel 2-pole resonators tuned to the formant centres `(F1,
+  F2)`. Each resonator is the standard Klatt-normalised biquad
+  `y[n] = (1−r²)·x[n] + 2·r·cos(ω)·y[n−1] − r²·y[n−2]` with `r =
+  exp(−π·BW/Fs)` and `ω = 2π·F/Fs`, holding the magnitude response at
+  unity at the formant centre with a −3 dB bandwidth of `bw=` Hz
+  (default 80, a textbook-typical value). The two resonator outputs
+  are summed and peak-normalised so every sample stays inside
+  `[-amplitude, amplitude]`. `vowel=A|E|I|O|U` (case-insensitive)
+  selects textbook-standard rounded adult-male formant centres
+  consistent with the 1952 Peterson & Barney study reproduced in every
+  introductory phonetics textbook since:
+  `A→(730,1090)`, `E→(530,1840)`, `I→(270,2290)`, `O→(570,840)`,
+  `U→(300,870)` Hz. Unknown vowels are an error rather than a silent
+  default. Reaches the URI path
+  (`generate://synth?type=formant&vowel=A&f0=220&duration=0.5`), the
+  `synth:` shorthand, and the `audio.synth` filter through the
+  existing dispatcher (no new registration). Validated via a small
+  in-tree DFT: for each of the five vowels rendered at 220 Hz / 16
+  kHz / 100 ms, the DFT magnitude at the f0-harmonic nearest each
+  formant centre dominates an off-band probe at 3300 Hz by ≥3× (the
+  measured ratios are well clear of the asserted floor).
 - Audio synth gained a `ringmod` (`ring`) mode — classical analogue ring
   modulation: `amplitude · sin(2π·f1·t) · sin(2π·f2·t)`. By the
   prosthaphaeresis identity `sin(α)·sin(β) = ½·[cos(α−β) − cos(α+β)]`

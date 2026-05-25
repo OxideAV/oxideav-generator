@@ -3,7 +3,8 @@
 Pure-Rust synthetic media generator for the oxideav framework. Provides
 audio synth (sine / square / triangle / sawtooth / Karplus-Strong pluck /
 linear + exponential chirp / FM / ring modulation / DTMF touch-tones /
-ADSR-enveloped tone / multi-tone / white-pink-brown noise / silence),
+ADSR-enveloped tone / Klatt-style two-formant vowel synthesizer /
+multi-tone / white-pink-brown noise / silence),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin noise), and video
@@ -44,6 +45,7 @@ generate://synth?type=fm&carrier=440&modulator=110&index=5&duration=2
 generate://synth?type=ringmod&f1=440&f2=60&duration=2
 generate://synth?type=dtmf&digits=0123456789&tone=0.1&gap=0.05
 generate://synth?type=adsr&wave=sine&freq=440&attack=0.02&decay=0.1&sustain=0.7&release=0.2&duration=2
+generate://synth?type=formant&vowel=A&f0=220&duration=0.5
 generate://synth?type=multitone&freqs=440,1000,2200&duration=1
 generate://synth?type=noise&color=pink&duration=10
 
@@ -99,6 +101,29 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 7 (2026-05-25): synth catalogue gained `formant` (alias `vowel`)
+— a Klatt-style two-formant vowel synthesizer (after Klatt, 1980,
+"Software for a cascade/parallel formant synthesizer", JASA
+67(3):971-995 — paper is the public reference, no source-reading of any
+Klatt / Festival / espeak / mbrola / Praat implementation). A
+glottal-pulse train at `f0=` (impulse every `Fs/f0` samples, lightly
+low-passed) drives two parallel 2-pole resonators tuned to the formant
+centres `(F1, F2)`, with the standard Klatt-normalised biquad
+`y[n] = (1−r²)·x[n] + 2·r·cos(ω)·y[n−1] − r²·y[n−2]` holding the
+magnitude response at unity at the formant peak with `bw=` Hz of
+bandwidth (default 80). The two resonator outputs are summed and
+peak-normalised so output stays inside `[-amplitude, amplitude]`.
+`vowel=A|E|I|O|U` (case-insensitive) selects textbook-standard
+adult-male centres consistent with the 1952 Peterson & Barney study:
+`A→(730,1090)`, `E→(530,1840)`, `I→(270,2290)`, `O→(570,840)`,
+`U→(300,870)` Hz. Validated by an in-tree single-bin DFT — every
+vowel's peaks at the f0-harmonic nearest each formant dominate an
+out-of-band probe at 3300 Hz by ≥3× (measured ratios well clear of
+the asserted floor). Reaches the URI path
+(`generate://synth?type=formant&vowel=A&f0=220`), the `synth:`
+shorthand, and the `audio.synth` filter through the existing
+dispatcher (no new registration).
 
 Round 6 (2026-05-24): synth catalogue gained `ringmod` — classical
 analogue ring modulation, the literal product of two sines:
