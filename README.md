@@ -2,7 +2,7 @@
 
 Pure-Rust synthetic media generator for the oxideav framework. Provides
 audio synth (sine / square / triangle / sawtooth / Karplus-Strong pluck /
-linear + exponential chirp / FM / ring modulation / DTMF touch-tones /
+linear + exponential chirp / FM / AM / ring modulation / DTMF touch-tones /
 ADSR-enveloped tone / Klatt-style two-formant vowel synthesizer /
 multi-tone / white-pink-brown noise / silence),
 image basics (solid colour, linear / radial gradient,
@@ -42,6 +42,7 @@ generate://synth?type=pluck&freq=440&decay=0.99&duration=3
 generate://synth?type=chirp&shape=linear&f0=200&f1=4000&duration=4
 generate://synth?type=chirp&shape=exp&f0=20&f1=20000&duration=4
 generate://synth?type=fm&carrier=440&modulator=110&index=5&duration=2
+generate://synth?type=am&carrier=440&modulator=60&index=0.5&duration=2
 generate://synth?type=ringmod&f1=440&f2=60&duration=2
 generate://synth?type=dtmf&digits=0123456789&tone=0.1&gap=0.05
 generate://synth?type=adsr&wave=sine&freq=440&attack=0.02&decay=0.1&sustain=0.7&release=0.2&duration=2
@@ -101,6 +102,24 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 8 (2026-05-29): synth catalogue gained `am` — classical analogue
+amplitude modulation `amplitude · 0.5 · (1 + m·sin(2π·fm·t)) ·
+sin(2π·fc·t)`. By the prosthaphaeresis identity the expanded form is
+`0.5·sin(2π·fc·t) + 0.25·m·[cos(2π·(fc − fm)·t) − cos(2π·(fc + fm)·t)]`,
+so the spectrum is an unsuppressed carrier at `fc` plus two sidebands
+at `fc ± fm` — explicitly the carrier-preserving counterpart of the
+existing `ringmod` mode (which suppresses the carrier entirely; the
+side-by-side test compares DFT magnitude at `fc` for both and confirms
+AM's carrier dominates ringmod's by ≥10×). `index=` is the modulation
+index `m ∈ [0, 1]` (100 % modulation at `m=1`, pure half-amplitude
+carrier at `m=0`); out-of-range values are clamped at the dispatcher.
+The leading `0.5` keeps the worst-case `(1 + m)·1 = 2` at `m=1` inside
+`[-amplitude, amplitude]` for every `(fc, fm, index)` and every sample
+rate. Pure first-principles DSP, no spec or external-library dependency.
+Reaches the URI path (`generate://synth?type=am&carrier=…&modulator=…`),
+the `synth:` shorthand, and the `audio.synth` filter through the
+existing dispatcher (no new registration).
 
 Round 7 (2026-05-25): synth catalogue gained `formant` (alias `vowel`)
 — a Klatt-style two-formant vowel synthesizer (after Klatt, 1980,

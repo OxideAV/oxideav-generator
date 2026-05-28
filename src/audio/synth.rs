@@ -148,6 +148,39 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
             let f2 = q_f64(query, "f2", 60.0)? as f32;
             ringmod(f1, f2, sample_rate, frame_count, amplitude)
         }
+        "am" => {
+            // Classical analogue amplitude modulation:
+            //   amplitude · 0.5 · (1 + m·sin(2π·fm·t)) · sin(2π·fc·t)
+            //
+            // Distinguishing feature versus ring modulation: AM keeps
+            // the carrier. By the prosthaphaeresis identity the
+            // expanded form is
+            //   0.5·sin(2π·fc·t)
+            //   + 0.25·m·[cos(2π·(fc−fm)·t) − cos(2π·(fc+fm)·t)],
+            // i.e. an unsuppressed carrier at fc plus sidebands at
+            // fc ± fm. `index=` is the modulation index m in [0, 1]
+            // (100 % modulation at m=1, pure carrier at m=0). The
+            // leading 0.5 keeps the worst-case envelope `(1 + m)·1` at
+            // m=1 inside `[-amplitude, amplitude]`.
+            let carrier = q_f64(query, "carrier", 440.0)? as f32;
+            // Default carrier:modulator ratio 2:1 (modulator is half
+            // the carrier) — matches the FM default and produces a
+            // textbook AM example.
+            let modulator = q_f64(query, "modulator", carrier as f64 * 0.5)? as f32;
+            // Modulation index in [0, 1]. Out-of-range values clamp
+            // (negative would invert the phase of the modulator only,
+            // and >1 over-modulates which the bounded form here
+            // explicitly avoids).
+            let index = (q_f64(query, "index", 0.5)? as f32).clamp(0.0, 1.0);
+            am(
+                carrier,
+                modulator,
+                index,
+                sample_rate,
+                frame_count,
+                amplitude,
+            )
+        }
         "dtmf" => {
             // Touch-tone keypad: each key is the sum of one low-group and
             // one high-group sine (ITU-T Q.23 / Q.24 DTMF layout).
@@ -229,7 +262,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|am|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
             )));
         }
     };
@@ -443,6 +476,45 @@ pub fn ringmod(f1: f32, f2: f32, sample_rate: u32, n: usize, amplitude: f32) -> 
             let a = (TAU * f1 * t).sin();
             let b = (TAU * f2 * t).sin();
             amplitude * a * b
+        })
+        .collect()
+}
+
+/// Classical analogue amplitude modulation:
+///
+/// ```text
+/// amplitude · 0.5 · (1 + m·sin(2π·fm·t)) · sin(2π·fc·t)
+/// ```
+///
+/// Expanded via the prosthaphaeresis identity, the spectrum is
+///
+/// ```text
+/// 0.5·sin(2π·fc·t)
+///   + 0.25·m·[cos(2π·(fc − fm)·t) − cos(2π·(fc + fm)·t)],
+/// ```
+///
+/// i.e. an unsuppressed carrier at `fc` plus two sidebands at `fc ± fm`
+/// — this is exactly what distinguishes AM from ring modulation, which
+/// suppresses the carrier entirely. `index` is the modulation index
+/// `m ∈ [0, 1]` (100 % modulation at `m=1`, pure carrier at `m=0`); it
+/// is clamped into that range by the caller. The leading `0.5` keeps
+/// the worst-case envelope `(1 + m)·1 ≤ 2` at `m=1` inside
+/// `[-amplitude, amplitude]`.
+pub fn am(
+    carrier: f32,
+    modulator: f32,
+    index: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Vec<f32> {
+    let dt = 1.0 / sample_rate as f32;
+    let half = 0.5 * amplitude;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 * dt;
+            let envelope = 1.0 + index * (TAU * modulator * t).sin();
+            half * envelope * (TAU * carrier * t).sin()
         })
         .collect()
 }
@@ -1095,6 +1167,141 @@ mod tests {
     fn ringmod_listed_in_unknown_type_help() {
         let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
         assert!(format!("{err}").contains("ringmod"));
+    }
+
+    // ───── AM (amplitude modulation) ─────
+
+    #[test]
+    fn am_matches_prosthaphaeresis_expansion() {
+        // 0.5·(1 + m·sin(2π·fm·t))·sin(2π·fc·t)
+        //   = 0.5·sin(2π·fc·t)
+        //     + 0.25·m·[cos(2π·(fc-fm)·t) - cos(2π·(fc+fm)·t)]
+        // Verify the closed form sample-by-sample.
+        let sr = 8000;
+        let n = 1024;
+        let fc = 440.0_f32;
+        let fm_freq = 60.0_f32;
+        let m = 0.5_f32;
+        let amp = 0.8_f32;
+        let got = am(fc, fm_freq, m, sr, n, amp);
+        let dt = 1.0 / sr as f32;
+        let half = 0.5 * amp;
+        let quart = 0.25 * amp * m;
+        for (i, &g) in got.iter().enumerate() {
+            let t = i as f32 * dt;
+            let want = half * (TAU * fc * t).sin()
+                + quart * ((TAU * (fc - fm_freq) * t).cos() - (TAU * (fc + fm_freq) * t).cos());
+            // f32 trig drift over 1024 samples × 500 Hz × TAU of
+            // accumulated phase puts the realistic floor for the
+            // direct-vs-expanded comparison around 1e-4.
+            assert!((g - want).abs() < 1e-4, "sample {i}: got {g}, want {want}");
+        }
+    }
+
+    #[test]
+    fn am_zero_index_reduces_to_half_amplitude_carrier() {
+        // m=0 → envelope (1 + 0·sin) = 1; the output collapses to
+        // 0.5·amplitude·sin(2π·fc·t), i.e. a pure carrier sine at
+        // half amplitude. The leading 0.5 is intentional — it's how
+        // AM stays bounded by `amplitude` at the worst case m=1.
+        let sr = 8000;
+        let n = 1024;
+        let fc = 440.0_f32;
+        let amp = 0.8_f32;
+        let am_buf = am(fc, 110.0, 0.0, sr, n, amp);
+        let sine_half = sine(fc, sr, n, 0.5 * amp);
+        let max_err = am_buf
+            .iter()
+            .zip(&sine_half)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_err < 1e-4, "max err = {max_err}");
+    }
+
+    #[test]
+    fn am_carrier_is_present_unlike_ringmod() {
+        // Distinguishing feature: AM keeps a carrier component at
+        // f=fc, ringmod does not. Render both with the same fc/fm
+        // and confirm the DFT magnitude at fc is large for AM but
+        // negligible for ringmod.
+        let sr = 8000u32;
+        let sr_f = sr as f32;
+        let n = 2048;
+        let fc = 440.0_f32;
+        let fm_freq = 60.0_f32;
+        let am_buf = am(fc, fm_freq, 0.5, sr, n, 0.8);
+        let rm_buf = ringmod(fc, fm_freq, sr, n, 0.8);
+        let mag_am_carrier = dft_mag(&am_buf, fc, sr_f);
+        let mag_rm_carrier = dft_mag(&rm_buf, fc, sr_f);
+        // AM's carrier sits at 0.5·amplitude — by far the strongest
+        // bin in the spectrum. Ringmod's bin at fc is whatever leakage
+        // an integer-period mismatch produces (essentially noise floor).
+        // A 10× ratio is conservative for a clean separation.
+        assert!(
+            mag_am_carrier > 10.0 * mag_rm_carrier,
+            "AM carrier ({mag_am_carrier}) should dominate ringmod carrier ({mag_rm_carrier})"
+        );
+    }
+
+    #[test]
+    fn am_output_bounded_by_amplitude() {
+        // At m=1 the envelope peaks at 2, the carrier peaks at 1, and
+        // the leading 0.5 keeps the product at exactly amplitude in
+        // the worst case. Sample-wise check across the full m range.
+        for &m in &[0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+            let buf = am(440.0, 60.0, m, 8000, 4000, 0.7);
+            for s in &buf {
+                assert!(
+                    s.abs() <= 0.7 + 1e-6,
+                    "out-of-bounds AM sample {s} at m={m}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn am_dispatcher_default_keeps_bounds() {
+        let buf = render(&map(&[("type", "am"), ("duration", "0.05")])).unwrap();
+        assert_eq!(buf.samples.len(), 400); // 8000 × 0.05
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn am_dispatcher_clamps_index() {
+        // index=2 is out of the [0, 1] range. The dispatcher clamps
+        // to 1.0 before calling `am`; verify by comparing against an
+        // explicit index=1 render.
+        let clamped = render(&map(&[
+            ("type", "am"),
+            ("duration", "0.05"),
+            ("index", "2"),
+            ("carrier", "440"),
+            ("modulator", "60"),
+        ]))
+        .unwrap();
+        let explicit = render(&map(&[
+            ("type", "am"),
+            ("duration", "0.05"),
+            ("index", "1"),
+            ("carrier", "440"),
+            ("modulator", "60"),
+        ]))
+        .unwrap();
+        assert_eq!(clamped.samples.len(), explicit.samples.len());
+        for (i, (&a, &b)) in clamped.samples.iter().zip(&explicit.samples).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "sample {i}: clamped {a}, explicit {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn am_listed_in_unknown_type_help() {
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        assert!(format!("{err}").contains("am"));
     }
 
     // ───── multitone ─────

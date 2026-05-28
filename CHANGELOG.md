@@ -8,6 +8,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained an `am` mode — classical analogue amplitude
+  modulation, `amplitude · 0.5 · (1 + m·sin(2π·fm·t)) · sin(2π·fc·t)`.
+  Expanded via the prosthaphaeresis identity the spectrum is
+  `0.5·sin(2π·fc·t) + 0.25·m·[cos(2π·(fc − fm)·t) − cos(2π·(fc + fm)·t)]`,
+  i.e. an unsuppressed carrier at `fc` plus two sidebands at
+  `fc ± fm` — explicitly the carrier-preserving counterpart of the
+  existing `ringmod` mode (the in-tree DFT test compares the bin at
+  `fc` for both modes at identical parameters and asserts AM's carrier
+  dominates ringmod's by ≥10×). `index=` is the modulation index
+  `m ∈ [0, 1]` (100 % modulation at `m=1`, pure half-amplitude carrier
+  at `m=0`); the dispatcher clamps out-of-range values. The leading
+  `0.5` keeps the worst-case envelope `(1 + m)·1 ≤ 2` at `m=1` inside
+  `[-amplitude, amplitude]` for every `(fc, fm, index)` and every
+  sample rate (sample-wise bounds verified at `m ∈ {0, 0.25, 0.5, 0.75,
+  1}`). Pure first-principles DSP, no spec or external-library
+  dependency; reaches the URI path
+  (`generate://synth?type=am&carrier=…&modulator=…&index=…`), the
+  `synth:` shorthand, and the `audio.synth` filter through the
+  existing dispatcher (no new registration). Default carrier/modulator
+  ratio mirrors the `fm` mode (2:1), default index is `0.5`.
 - Audio synth gained a `formant` (alias `vowel`) mode — a Klatt-style
   two-formant vowel synthesizer (after Klatt 1980, JASA 67(3):971-995;
   the paper is the public reference, no source-reading of any Klatt /
