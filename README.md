@@ -7,7 +7,8 @@ ADSR-enveloped tone / Klatt-style two-formant vowel synthesizer /
 multi-tone / white-pink-brown-blue-violet noise / silence),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
-(Mandelbrot + Julia fractals, plasma, Perlin noise), and video
+(Mandelbrot + Julia fractals, plasma, Perlin + simplex gradient
+noise), and video
 (ffmpeg-style `testsrc`, SMPTE colour bars, animated Mandelbrot zoom,
 hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency probe).
 
@@ -61,6 +62,7 @@ generate://fractal?type=mandelbrot&w=640&h=480&cx=-0.5&cy=0&zoom=2&iter=256
 generate://fractal?type=julia&w=640&h=480&cx=-0.7&cy=0.27&iter=256
 generate://plasma?w=640&h=480&seed=42
 generate://noise?type=perlin&w=640&h=480&scale=64&seed=42
+generate://noise?type=simplex&w=640&h=480&scale=64&octaves=4&seed=42
 
 generate://testsrc?w=640&h=480&duration=5&fps=30
 generate://smptebars?w=640&h=480&duration=5&fps=30
@@ -104,6 +106,28 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 10 (2026-05-30): `generate://noise?type=simplex` is now a real
+Ken-Perlin-2001 improved-gradient-noise generator instead of an alias
+that silently produced byte-identical output to `type=perlin`. The 2-D
+simplex tessellation tiles the plane with equilateral triangles: each
+sample point is skewed by `F2 = (√3 − 1) / 2` into a sheared lattice
+where the containing simplex is found by a single integer floor plus one
+`x0 > y0` "which-half" comparison, the three corners are unskewed back by
+`G2 = (3 − √3) / 6`, and each corner contributes a radially-attenuated
+`max(0, 0.5 − r²)⁴ · (gradient · offset)` term (the falloff confines a
+corner's influence to its own simplex, giving a C²-continuous surface
+with no directional bias). The summed contributions are scaled by `70.0`
+back toward `[−1, 1]`, matching `perlin2`'s output range so the shared
+multi-octave fBm accumulator, palette mapping, `scale=` / `octaves=` /
+`seed=` parameters, and the 512-entry seeded permutation table
+(`build_perm`, Fisher-Yates with the in-tree LCG) all work unchanged for
+both kinds. An in-tree test sweeps a 200×200 grid and asserts the raw
+samples stay inside `[−1, 1]` while still exercising a meaningful slice
+of the range (|v| > 0.3); another confirms simplex output now differs
+byte-for-byte from Perlin at the same seed/scale (it used to be
+identical). Same `seed=` is bit-deterministic across builds. Pure
+first-principles maths — no spec, no external-library source.
 
 Round 9 (2026-05-29): synth `noise` catalogue gained two new colours
 that complete the symmetric high-pass side of the family. `blue`
@@ -246,4 +270,6 @@ plus `#RGB`, `#RGBA`, `#RRGGBB`, and `#RRGGBBAA`.
 
 All randomness is seeded — every generator that takes a `seed=` query
 parameter is bit-deterministic across builds. Defaults: `seed=42` for
-plasma / Perlin, `seed=0x12345678` for white / pink / brown noise.
+plasma / Perlin / simplex, `seed=0x12345678` for white / pink / brown
+noise. Perlin and simplex draw from the same seeded 512-entry
+permutation table, so a given `seed=` is reproducible for both kinds.

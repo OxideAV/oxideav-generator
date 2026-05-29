@@ -8,6 +8,35 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- `generate://noise?type=simplex` is now a real Ken-Perlin-2001
+  improved-gradient-noise generator. Previously `type=simplex` was a
+  straight alias that produced byte-identical output to `type=perlin`;
+  it now runs the genuine 2-D simplex algorithm. The plane is tiled
+  with equilateral triangles: each sample is skewed by
+  `F2 = (√3 − 1) / 2` into a sheared lattice (so the containing simplex
+  is found by one integer floor + one `x0 > y0` half-test), the three
+  corners are unskewed back by `G2 = (3 − √3) / 6`, and each corner
+  contributes a radially-attenuated `max(0, 0.5 − r²)⁴ ·
+  (gradient · offset)` term — the falloff confines a corner's
+  influence to its own simplex, giving a C²-continuous surface with no
+  directional bias. The summed contributions are scaled by `70.0` back
+  toward `[−1, 1]`, matching the existing `perlin2` range so the shared
+  multi-octave fBm accumulator, palette mapping, `scale=` / `octaves=`
+  / `seed=` parameters, and the seeded 512-entry permutation table all
+  apply unchanged to both kinds. A new test sweeps a 200×200 grid and
+  asserts samples stay inside `[−1, 1]` while still exercising a
+  meaningful slice of the range; another asserts simplex output now
+  differs byte-for-byte from Perlin at the same seed/scale. Same
+  `seed=` is bit-deterministic across builds. Pure first-principles
+  maths — no spec, no external-library source.
+
+### Changed
+
+- The old `simplex_alias_routes_to_perlin` test (which only checked
+  that the simplex alias rendered) was replaced by a `simplex_renders`
+  sizing check plus dedicated determinism / seed-divergence /
+  distinct-from-Perlin / bounded-range tests for the real generator.
+
 - Audio synth's `noise` family gained two new colours that complete
   the symmetric high-pass side of the spectrum. `blue` (alias
   `azure`) is the discrete first difference of white noise,
