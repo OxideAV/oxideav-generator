@@ -252,9 +252,11 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
                 "white" => noise_white(frame_count, amplitude, seed),
                 "pink" => noise_pink(frame_count, amplitude, seed),
                 "brown" | "brownian" => noise_brown(frame_count, amplitude, seed),
+                "blue" | "azure" => noise_blue(frame_count, amplitude, seed),
+                "violet" | "purple" => noise_violet(frame_count, amplitude, seed),
                 other => {
                     return Err(Error::invalid(format!(
-                        "synth: noise color {other:?} (expected white|pink|brown)"
+                        "synth: noise color {other:?} (expected white|pink|brown|blue|violet)"
                     )));
                 }
             }
@@ -914,6 +916,60 @@ pub fn noise_brown(n: usize, amplitude: f32, seed: u32) -> Vec<f32> {
     out
 }
 
+/// Blue noise — the discrete first difference of white noise,
+/// `y[n] = x[n] − x[n−1]`. This is the discrete-time derivative,
+/// whose frequency response `|H(e^{jω})|² = 2·(1 − cos ω)` rises
+/// monotonically from 0 at DC to 4 at the Nyquist limit, i.e. power
+/// spectral density grows roughly as `f²` over the audio band — the
+/// +6 dB/octave high-pass complement of brown's −6 dB/octave low-pass.
+///
+/// Worst-case `x[n] − x[n−1]` with each `x ∈ [-1, 1]` is bounded by 2,
+/// so the half-scaling keeps the output strictly inside
+/// `[-amplitude, amplitude]` regardless of the sequence drawn from the
+/// generator.
+pub fn noise_blue(n: usize, amplitude: f32, seed: u32) -> Vec<f32> {
+    let mut rng = Lcg::new(seed);
+    let mut prev: f32 = 0.0;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let white = rng.next_f32() * 2.0 - 1.0;
+        // First difference, scaled by 0.5 to bound the result in
+        // [-amplitude, amplitude]: |x − x_prev| ≤ 2 ⇒ |0.5·(x − x_prev)| ≤ 1.
+        let diff = 0.5 * (white - prev);
+        out.push(diff * amplitude);
+        prev = white;
+    }
+    out
+}
+
+/// Violet / purple noise — the discrete second difference of white
+/// noise, `y[n] = x[n] − 2·x[n−1] + x[n−2]`. Equivalently it's the
+/// first difference applied twice, so the frequency response is the
+/// square of blue's: `|H(e^{jω})|² = [2·(1 − cos ω)]² = 4·(1 − cos ω)²`,
+/// rising from 0 at DC to 16 at Nyquist. Power spectral density grows
+/// roughly as `f⁴` over the audio band — the +12 dB/octave high-pass
+/// counterpart of brown's −12 dB/octave low-pass.
+///
+/// Worst-case `|x − 2·x_prev + x_prev2|` with each input in `[-1, 1]`
+/// is bounded by 4, so the quarter-scaling keeps the output strictly
+/// inside `[-amplitude, amplitude]`.
+pub fn noise_violet(n: usize, amplitude: f32, seed: u32) -> Vec<f32> {
+    let mut rng = Lcg::new(seed);
+    let mut prev1: f32 = 0.0;
+    let mut prev2: f32 = 0.0;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let white = rng.next_f32() * 2.0 - 1.0;
+        // Second difference, scaled by 0.25 to bound the result in
+        // [-amplitude, amplitude]: |x − 2·x_prev + x_prev2| ≤ 4.
+        let d2 = 0.25 * (white - 2.0 * prev1 + prev2);
+        out.push(d2 * amplitude);
+        prev2 = prev1;
+        prev1 = white;
+    }
+    out
+}
+
 /// Tiny Lcg so we don't need a `rand` dep.
 struct Lcg {
     state: u64,
@@ -1006,8 +1062,11 @@ mod tests {
 
     #[test]
     fn unknown_noise_color_errors() {
-        let err = render(&map(&[("type", "noise"), ("color", "purple")])).unwrap_err();
-        assert!(format!("{err}").contains("purple"));
+        // `purple` is now a valid alias for violet noise; the
+        // sentinel for "unknown colour" is something genuinely
+        // unmatched.
+        let err = render(&map(&[("type", "noise"), ("color", "chartreuse")])).unwrap_err();
+        assert!(format!("{err}").contains("chartreuse"));
     }
 
     // ───── chirp / sweep ─────
@@ -1716,5 +1775,179 @@ mod tests {
             mag_peak > 3.0 * mag_off,
             "resonator peak {mag_peak} not dominant over off-centre {mag_off}"
         );
+    }
+
+    // ───── blue / violet noise ─────
+
+    #[test]
+    fn noise_blue_bounded_by_amplitude() {
+        // |0.5·(x − x_prev)| ≤ 1 when |x|, |x_prev| ≤ 1 — output must
+        // stay strictly inside [-amplitude, amplitude] for every draw.
+        let amp = 0.8_f32;
+        let buf = noise_blue(8192, amp, 0xCAFE_F00D);
+        for s in &buf {
+            assert!(
+                s.abs() <= amp + 1e-6,
+                "blue sample {s} exceeds amplitude {amp}"
+            );
+        }
+    }
+
+    #[test]
+    fn noise_violet_bounded_by_amplitude() {
+        // |0.25·(x − 2·x_prev + x_prev2)| ≤ 1 when |·| ≤ 1 — output
+        // must stay strictly inside [-amplitude, amplitude].
+        let amp = 0.7_f32;
+        let buf = noise_violet(8192, amp, 0xDEAD_BEEF);
+        for s in &buf {
+            assert!(
+                s.abs() <= amp + 1e-6,
+                "violet sample {s} exceeds amplitude {amp}"
+            );
+        }
+    }
+
+    #[test]
+    fn noise_blue_is_high_pass_versus_white() {
+        // Blue noise's PSD grows as ~f² over the band: the high-frequency
+        // half of the spectrum should carry materially more energy than
+        // the low-frequency half. We compare a single-bin DFT probe near
+        // Nyquist/4 (3 kHz at Fs=16k) against a probe near DC (200 Hz);
+        // for white noise the two should be statistically comparable,
+        // for blue the high probe should dominate.
+        let sr = 16_000_u32;
+        let n = 4096;
+        let amp = 1.0_f32;
+        let white = noise_white(n, amp, 0x1234_5678);
+        let blue = noise_blue(n, amp, 0x1234_5678);
+        let lo_white = dft_mag(&white, 200.0, sr as f32);
+        let hi_white = dft_mag(&white, 3000.0, sr as f32);
+        let lo_blue = dft_mag(&blue, 200.0, sr as f32);
+        let hi_blue = dft_mag(&blue, 3000.0, sr as f32);
+        // Blue's high/low ratio should be much larger than white's
+        // (3000/200 ≈ 15; an f²-rising PSD predicts ~225× power, or
+        // ~15× magnitude). A 5× floor stays well below the predicted
+        // ratio while leaving plenty of headroom for the single-bin
+        // statistical noise.
+        let blue_ratio = hi_blue / lo_blue.max(1e-9);
+        let white_ratio = hi_white / lo_white.max(1e-9);
+        assert!(
+            blue_ratio > 5.0 * white_ratio,
+            "blue hi/lo ratio {blue_ratio} not >> white hi/lo ratio {white_ratio}"
+        );
+    }
+
+    #[test]
+    fn noise_violet_steeper_high_pass_than_blue() {
+        // Violet's PSD grows as ~f⁴ — its hi/lo ratio should exceed
+        // blue's, since stacking two differences squares the response.
+        let sr = 16_000_u32;
+        let n = 4096;
+        let blue = noise_blue(n, 1.0, 0xABCD_EF01);
+        let violet = noise_violet(n, 1.0, 0xABCD_EF01);
+        let lo_blue = dft_mag(&blue, 200.0, sr as f32);
+        let hi_blue = dft_mag(&blue, 3000.0, sr as f32);
+        let lo_violet = dft_mag(&violet, 200.0, sr as f32);
+        let hi_violet = dft_mag(&violet, 3000.0, sr as f32);
+        let blue_ratio = hi_blue / lo_blue.max(1e-9);
+        let violet_ratio = hi_violet / lo_violet.max(1e-9);
+        assert!(
+            violet_ratio > 1.5 * blue_ratio,
+            "violet hi/lo ratio {violet_ratio} not steeper than blue {blue_ratio}"
+        );
+    }
+
+    #[test]
+    fn noise_blue_deterministic_per_seed() {
+        // The same seed must produce identical samples — bit-exact
+        // reproducibility is documented in the README's `## Determinism`
+        // section and matters for fixture tests.
+        let a = noise_blue(256, 0.9, 0x4242_4242);
+        let b = noise_blue(256, 0.9, 0x4242_4242);
+        let c = noise_blue(256, 0.9, 0x4242_4243);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn noise_violet_deterministic_per_seed() {
+        let a = noise_violet(256, 0.9, 0x5151_5151);
+        let b = noise_violet(256, 0.9, 0x5151_5151);
+        let c = noise_violet(256, 0.9, 0x5151_5152);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn noise_blue_dispatcher_reachable_via_uri() {
+        // Smoke test the dispatcher path: `type=noise&color=blue` must
+        // reach the new generator, produce the right sample count,
+        // and stay bounded.
+        let buf = render(&map(&[
+            ("type", "noise"),
+            ("color", "blue"),
+            ("duration", "0.01"),
+            ("amplitude", "0.8"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.samples.len(), 80); // 8000 × 0.01
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn noise_violet_dispatcher_reachable_via_uri() {
+        let buf = render(&map(&[
+            ("type", "noise"),
+            ("color", "violet"),
+            ("duration", "0.01"),
+            ("amplitude", "0.6"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.samples.len(), 80);
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.6 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn noise_purple_is_alias_for_violet() {
+        // `purple` and `violet` must produce identical samples at the
+        // same seed — same alias contract as `brown`/`brownian`.
+        let buf_violet = render(&map(&[
+            ("type", "noise"),
+            ("color", "violet"),
+            ("seed", "12345"),
+            ("duration", "0.005"),
+        ]))
+        .unwrap();
+        let buf_purple = render(&map(&[
+            ("type", "noise"),
+            ("color", "purple"),
+            ("seed", "12345"),
+            ("duration", "0.005"),
+        ]))
+        .unwrap();
+        assert_eq!(buf_violet.samples, buf_purple.samples);
+    }
+
+    #[test]
+    fn noise_azure_is_alias_for_blue() {
+        let buf_blue = render(&map(&[
+            ("type", "noise"),
+            ("color", "blue"),
+            ("seed", "98765"),
+            ("duration", "0.005"),
+        ]))
+        .unwrap();
+        let buf_azure = render(&map(&[
+            ("type", "noise"),
+            ("color", "azure"),
+            ("seed", "98765"),
+            ("duration", "0.005"),
+        ]))
+        .unwrap();
+        assert_eq!(buf_blue.samples, buf_azure.samples);
     }
 }

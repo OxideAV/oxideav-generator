@@ -8,6 +8,37 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth's `noise` family gained two new colours that complete
+  the symmetric high-pass side of the spectrum. `blue` (alias
+  `azure`) is the discrete first difference of white noise,
+  `y[n] = 0.5·(x[n] − x[n−1])`, whose frequency response
+  `|H(e^{jω})|² = 2·(1 − cos ω)` is the discrete-derivative magnitude
+  — zero at DC, monotonically rising to 4 at the Nyquist limit — so
+  power spectral density grows roughly as `f²` over the audio band
+  (+6 dB/octave, the explicit complement of brown's −6 dB/octave
+  running-integral low-pass). `violet` (alias `purple`) is the
+  second difference `y[n] = 0.25·(x[n] − 2·x[n−1] + x[n−2])`, the
+  same filter applied twice so the response squares to
+  `[2·(1 − cos ω)]² = 4·(1 − cos ω)²` — rising from 0 at DC to 16
+  at Nyquist, +12 dB/octave PSD slope, the discrete second-
+  derivative counterpart of brown's −12 dB/octave double-integral.
+  The `0.5` / `0.25` scalings come from the worst-case input bounds
+  (`|x − x_prev| ≤ 2`, `|x − 2·x_prev + x_prev2| ≤ 4` when each
+  draw is in `[−1, 1]`) and guarantee every sample stays strictly
+  inside `[−amplitude, amplitude]` for every `(n, seed, amplitude)`
+  and every sample rate. Validated by a single-bin DFT — blue's
+  3 kHz / 200 Hz magnitude ratio dominates white's by ≥5×, and
+  violet's ratio is ≥1.5× steeper than blue's, both well clear of
+  the asserted floors. The same seed produces bit-identical samples
+  (`Determinism` section's contract); the dispatcher's `expected …`
+  error message now lists all five colours; the prior
+  `unknown_noise_color_errors` test (which used `purple` as its
+  unknown-colour sentinel) now uses `chartreuse` instead, since
+  `purple` is a documented alias for violet. Pure first-principles
+  DSP, no spec or external-library dependency; reaches the URI path
+  (`generate://synth?type=noise&color=blue|violet|azure|purple`),
+  the `synth:` shorthand, and the `audio.synth` filter through the
+  existing dispatcher (no new registration).
 - Audio synth gained an `am` mode — classical analogue amplitude
   modulation, `amplitude · 0.5 · (1 + m·sin(2π·fm·t)) · sin(2π·fc·t)`.
   Expanded via the prosthaphaeresis identity the spectrum is

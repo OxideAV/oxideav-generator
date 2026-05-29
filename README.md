@@ -4,7 +4,7 @@ Pure-Rust synthetic media generator for the oxideav framework. Provides
 audio synth (sine / square / triangle / sawtooth / Karplus-Strong pluck /
 linear + exponential chirp / FM / AM / ring modulation / DTMF touch-tones /
 ADSR-enveloped tone / Klatt-style two-formant vowel synthesizer /
-multi-tone / white-pink-brown noise / silence),
+multi-tone / white-pink-brown-blue-violet noise / silence),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin noise), and video
@@ -49,6 +49,8 @@ generate://synth?type=adsr&wave=sine&freq=440&attack=0.02&decay=0.1&sustain=0.7&
 generate://synth?type=formant&vowel=A&f0=220&duration=0.5
 generate://synth?type=multitone&freqs=440,1000,2200&duration=1
 generate://synth?type=noise&color=pink&duration=10
+generate://synth?type=noise&color=blue&seed=42&duration=10
+generate://synth?type=noise&color=violet&seed=42&duration=10
 
 generate://xc?color=red&w=640&h=480
 generate://xc?color=%23ff0000      # #ff0000 percent-encoded
@@ -102,6 +104,35 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 9 (2026-05-29): synth `noise` catalogue gained two new colours
+that complete the symmetric high-pass side of the family. `blue`
+(alias `azure`) is the discrete first difference of white noise,
+`y[n] = 0.5·(x[n] − x[n−1])`, whose frequency response
+`|H(e^{jω})|² = 2·(1 − cos ω)` is the discrete-derivative magnitude:
+zero at DC, monotonically rising to 4 at the Nyquist limit — power
+spectral density grows roughly as `f²` over the audio band,
++6 dB/octave, the explicit complement of brown's −6 dB/octave
+low-pass running integral. `violet` (alias `purple`) is the second
+difference `y[n] = 0.25·(x[n] − 2·x[n−1] + x[n−2])`, the same filter
+applied twice so the response squares to
+`[2·(1 − cos ω)]² = 4·(1 − cos ω)²` — rising from 0 at DC to 16 at
+Nyquist, +12 dB/octave PSD slope, the discrete second-derivative
+counterpart of brown's −12 dB/octave double-integral. The 0.5 / 0.25
+scalings come from the worst-case input bounds (`|x − x_prev| ≤ 2`,
+`|x − 2·x_prev + x_prev2| ≤ 4` when each draw is in `[−1, 1]`) and
+guarantee every sample stays strictly inside `[−amplitude, amplitude]`
+for every `(n, seed, amplitude)` and every sample rate. Validated by
+an in-tree single-bin DFT — blue's 3 kHz / 200 Hz magnitude ratio
+dominates white's by ≥5×, and violet's ratio is ≥1.5× steeper than
+blue's, both well clear of the asserted floors. Same seed produces
+identical samples (`Determinism` section's contract) and the
+dispatcher's `expected …` error message now lists all five colours.
+Pure first-principles DSP, no spec or external-library dependency.
+Reaches the URI path
+(`generate://synth?type=noise&color=blue&seed=…`), the `synth:`
+shorthand, and the `audio.synth` filter through the existing
+dispatcher (no new registration).
 
 Round 8 (2026-05-29): synth catalogue gained `am` — classical analogue
 amplitude modulation `amplitude · 0.5 · (1 + m·sin(2π·fm·t)) ·
