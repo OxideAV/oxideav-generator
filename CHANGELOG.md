@@ -6,6 +6,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/OxideAV/oxideav-generator/compare/v0.1.3...v0.1.4) - 2026-05-29
+
+### Other
+
+- round 10: real simplex noise for generate://noise?type=simplex
+- round 9: synth noise gained `blue` and `violet` colours
+- round 8: synth `am` — classical analogue amplitude modulation
+- round 7: synth `formant` — Klatt-style two-formant vowel synthesizer
+- round 6: synth `ringmod` — classical analogue ring modulation
+- round 5: synth `adsr` — Attack-Decay-Sustain-Release enveloped tone
+- add DTMF touch-tone (dual-tone multi-frequency) mode
+- add chirp / FM / multitone modes + video zoneplate pattern
+
 ### Added
 
 - `generate://noise?type=simplex` is now a real Ken-Perlin-2001
