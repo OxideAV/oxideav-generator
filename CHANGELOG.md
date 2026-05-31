@@ -6,6 +6,46 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Added
+
+- Audio synth gained `pwm` (alias `pulse`) — a pulse-width-modulated
+  rectangular oscillator that generalises the fixed-50%-duty `square`
+  wave. `duty=` in `(0, 1)` is the fraction of each period the signal
+  sits at `+amplitude` (the remainder sits at `−amplitude`), and a
+  non-zero `lfo=` + `depth=` pair sweeps the duty threshold
+  sinusoidally between `duty − depth` and `duty + depth` at `lfo` Hz
+  — the canonical analogue-synth pulse-width-modulation effect that
+  turns the static pulse into a chorus-like / phasing widening of the
+  classical rectangle wave. The duty clamp is resolution-aware
+  (`eps = max(1.5 / period_samples, 1e-3)`) so each period always
+  contains at least one positive and one negative sample at every
+  sample rate, depth is clamped so `duty ± depth` never crosses the
+  same edges, and the output only takes values in
+  `{+amplitude, −amplitude}` so it is exactly bounded by `amplitude`
+  for every `(freq, duty, lfo, depth)`. Tests cover (a) duty=0.5 +
+  zero LFO reproducing `square` sample-for-sample, (b) the binary
+  `{±amp}` invariant, (c) `duty ∈ {0.1, 0.25, 0.5, 0.75, 0.9}`
+  yielding the matching positive-sample fraction within ~2%, (d) the
+  duty=0/1 clamps producing alternating polarities (no silent DC),
+  (e) the LFO actually steering the positive-fraction across the
+  buffer (q1 vs q3), (f) `freq ≤ 0` erroring out, (g) the dispatcher
+  `type=pwm` / `type=pulse` aliasing, (h) the catalogue listing the
+  new mode in the "unknown type" help, and (i) a pinned 16-sample
+  fixture (freq=1 kHz, duty=0.25 → two-on / six-off per period) so
+  future refactors can't silently change the wire format. Pure
+  first-principles DSP — no spec PDF, no external implementation
+  read; references are textbook analogue-synth theory only (Moore,
+  *Elements of Computer Music* 1990 ch.4 + the standard line-spectrum
+  Fourier-series result `∝ sin(π · k · d) / (π · k)` for a duty-`d`
+  rectangular train).
+
+### Changed
+
+- Integration test `tests/source_uri.rs` now matches `SourceOutput`
+  exhaustively via a fall-through `_` arm — the upstream enum became
+  `#[non_exhaustive]`, which had broken `cargo test` for the entire
+  crate before the new test could even run. No behaviour change.
+
 ## [0.1.4](https://github.com/OxideAV/oxideav-generator/compare/v0.1.3...v0.1.4) - 2026-05-29
 
 ### Other

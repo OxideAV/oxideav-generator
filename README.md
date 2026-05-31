@@ -1,10 +1,11 @@
 # oxideav-generator
 
 Pure-Rust synthetic media generator for the oxideav framework. Provides
-audio synth (sine / square / triangle / sawtooth / Karplus-Strong pluck /
-linear + exponential chirp / FM / AM / ring modulation / DTMF touch-tones /
-ADSR-enveloped tone / Klatt-style two-formant vowel synthesizer /
-multi-tone / white-pink-brown-blue-violet noise / silence),
+audio synth (sine / square / triangle / sawtooth / pulse-width-modulated
+rectangle / Karplus-Strong pluck / linear + exponential chirp / FM / AM /
+ring modulation / DTMF touch-tones / ADSR-enveloped tone / Klatt-style
+two-formant vowel synthesizer / multi-tone /
+white-pink-brown-blue-violet noise / silence),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin + simplex gradient
@@ -39,6 +40,8 @@ path produces frames natively.)
 ```
 generate://synth?type=sine&freq=440&duration=5
 generate://synth?type=square&freq=220&duration=2&amplitude=0.5
+generate://synth?type=pwm&freq=220&duty=0.25&duration=2
+generate://synth?type=pwm&freq=220&duty=0.5&lfo=2&depth=0.3&duration=3
 generate://synth?type=pluck&freq=440&decay=0.99&duration=3
 generate://synth?type=chirp&shape=linear&f0=200&f1=4000&duration=4
 generate://synth?type=chirp&shape=exp&f0=20&f1=20000&duration=4
@@ -106,6 +109,40 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 11 (2026-06-01): audio synth gained `pwm` (alias `pulse`) —
+a pulse-width-modulated rectangular oscillator that generalises the
+fixed-50%-duty `square` wave. `duty=` in `(0, 1)` is the fraction of
+each period the signal sits at `+amplitude` (the remainder sits at
+`−amplitude`); `duty=0.5` reproduces `square` sample-for-sample.
+Optional `lfo=` (Hz) + `depth=` together drive the canonical
+analogue-synth pulse-width-modulation effect: the duty threshold
+sweeps sinusoidally between `duty − depth` and `duty + depth` at
+`lfo` Hz, turning the static rectangle into a chorus-like / phasing
+widening of the classical pulse. The duty clamp is
+resolution-aware (`eps = max(1.5 / period_samples, 1e-3)`) so each
+period always contains at least one positive and one negative sample
+at every sample rate, depth is clamped so `duty ± depth` never
+crosses the same edges, and the output only takes values in
+`{+amplitude, −amplitude}` so it is exactly bounded by `amplitude`
+for every `(freq, duty, lfo, depth)`. Eleven new tests cover the
+duty=0.5 ↔ `square` identity, the binary `{±amp}` invariant, the
+`duty → positive-fraction` linearity (≤2% error across five duty
+settings), the duty=0/1 clamp (no silent DC), the LFO actually
+steering the positive-fraction across the buffer (q1 vs q3 ≥ 0.15
+apart), `freq ≤ 0` erroring out, the dispatcher `type=pwm` /
+`type=pulse` aliasing, the new mode being advertised in the
+"unknown type" help, and a pinned 16-sample fixture (freq=1 kHz,
+duty=0.25 → two-on / six-off per period). Pure first-principles
+DSP — no spec PDF, no external implementation read; references are
+textbook analogue-synth theory only (Moore, *Elements of Computer
+Music* 1990 ch.4 + the standard line-spectrum Fourier-series
+`∝ sin(π · k · d) / (π · k)` for a duty-`d` rectangular train).
+Also: integration test `tests/source_uri.rs` now matches
+`SourceOutput` exhaustively via a fall-through `_` arm — the
+upstream enum became `#[non_exhaustive]`, which had broken
+`cargo test` for the entire crate before this round's new test
+could run.
 
 Round 10 (2026-05-30): `generate://noise?type=simplex` is now a real
 Ken-Perlin-2001 improved-gradient-noise generator instead of an alias

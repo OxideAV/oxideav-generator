@@ -20,6 +20,7 @@ fn open_frames(reg: &SourceRegistry, uri: &str) -> Box<dyn oxideav_core::FrameSo
         SourceOutput::Frames(f) => f,
         SourceOutput::Bytes(_) => panic!("expected Frames variant for {uri}, got Bytes"),
         SourceOutput::Packets(_) => panic!("expected Frames variant for {uri}, got Packets"),
+        _ => panic!("expected Frames variant for {uri}, got an unknown SourceOutput variant"),
     }
 }
 

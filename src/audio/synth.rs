@@ -60,6 +60,21 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
             frame_count,
             amplitude,
         ),
+        "pwm" | "pulse" => {
+            // Pulse-width-modulated rectangular wave: a generalisation of
+            // `square` (which is `duty=0.5`). `duty=` is the fraction of
+            // each period the signal sits at `+amplitude`; the remainder
+            // sits at `-amplitude`. Constant `duty` is a static pulse
+            // wave; a non-zero `lfo=` modulates the duty sinusoidally at
+            // `lfo` Hz between `duty − depth` and `duty + depth`, the
+            // classical analogue-synth pulse-width-modulation effect that
+            // turns the static pulse into a chorus-y / phasing timbre.
+            let freq = q_f64(query, "freq", 440.0)? as f32;
+            let duty = q_f64(query, "duty", 0.5)? as f32;
+            let lfo = q_f64(query, "lfo", 0.0)? as f32;
+            let depth = q_f64(query, "depth", 0.0)? as f32;
+            pwm(freq, duty, lfo, depth, sample_rate, frame_count, amplitude)?
+        }
         "pluck" => karplus_strong(
             q_f64(query, "freq", 440.0)? as f32,
             q_f64(query, "decay", 0.996)? as f32,
@@ -264,7 +279,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pluck|chirp|fm|am|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pwm|pluck|chirp|fm|am|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
             )));
         }
     };
@@ -340,6 +355,84 @@ pub fn sawtooth(freq: f32, sample_rate: u32, n: usize, amplitude: f32) -> Vec<f3
             amplitude * (2.0 * phase - 1.0)
         })
         .collect()
+}
+
+/// Pulse-width-modulated rectangular wave at `freq` Hz.
+///
+/// Generalisation of the fixed 50%-duty [`square`] oscillator. At each
+/// sample the phase advances through the period; the output is
+/// `+amplitude` while the phase sits below the instantaneous duty
+/// threshold and `-amplitude` otherwise. Two regimes:
+///
+/// * **Static pulse** — `lfo = 0` or `depth = 0`. The duty cycle is
+///   the constant `duty ∈ (0, 1)`. `duty = 0.5` reproduces the
+///   classical square wave; `duty = 0.25` is a narrower pulse (Fourier
+///   series weights the odd harmonics differently); approaching
+///   `duty → 0` or `duty → 1` collapses the spectrum to ever-narrower
+///   spikes and the audible level falls off.
+/// * **PWM (pulse-width modulation)** — non-zero `lfo` + `depth`. The
+///   duty threshold sweeps sinusoidally between `duty − depth` and
+///   `duty + depth` at `lfo` Hz, i.e.
+///   `d(t) = duty + depth · sin(2π · lfo · t)`. This is the canonical
+///   analogue-synth PWM timbre — the static rectangular spectrum
+///   becomes a slowly modulated comb, perceived as a chorus-like or
+///   phasing widening of the static pulse.
+///
+/// `duty` is clamped into `[ε, 1 − ε]` so the wave always has at
+/// least one sample of each polarity per period (the all-positive /
+/// all-negative DC limits would be silent, not louder). `depth` is
+/// clamped into `[0, duty − ε]` so the modulated threshold never
+/// crosses the same edges. Output amplitude bound: the wave only
+/// takes values in `{+amplitude, −amplitude}`, so it is exactly
+/// bounded by `amplitude` for every `(freq, duty, lfo, depth)` and
+/// every sample rate.
+///
+/// References: pulse-width modulation is a textbook analogue-synth
+/// modulation source — see e.g. Moore, *Elements of Computer Music*
+/// (1990), chapter 4 on classic analogue-style oscillators, and any
+/// introductory DSP text on the Fourier series of a rectangular
+/// pulse train of duty `d` (the line-spectrum amplitudes are
+/// proportional to `sin(π · k · d) / (π · k)` for harmonic `k`).
+/// No external implementation read.
+pub fn pwm(
+    freq: f32,
+    duty: f32,
+    lfo: f32,
+    depth: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Result<Vec<f32>> {
+    if freq <= 0.0 {
+        return Err(Error::invalid(format!(
+            "synth: pwm requires freq>0 (got {freq})"
+        )));
+    }
+    let period_samples = (sample_rate as f32) / freq;
+    // Clamp duty into (eps, 1 − eps) so each period always has at
+    // least one positive and one negative segment. The clamp floor is
+    // the larger of a small absolute floor (1e-3, keeps very long
+    // periods from producing single-sample pulses below the audio
+    // floor) and 1.5/period_samples (keeps short periods from collapsing
+    // when the floor itself is smaller than one sample step).
+    let eps = (1.5 / period_samples).max(1.0e-3_f32);
+    let duty_c = duty.clamp(eps, 1.0 - eps);
+    // Clamp depth so duty ± depth never crosses the same eps edges.
+    let depth_room = (duty_c - eps).min(1.0 - eps - duty_c).max(0.0);
+    let depth_c = depth.abs().min(depth_room);
+    let dt = 1.0 / sample_rate as f32;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let phase = (i as f32 % period_samples) / period_samples; // 0..1
+        let d = if lfo != 0.0 && depth_c != 0.0 {
+            let t = i as f32 * dt;
+            (duty_c + depth_c * (TAU * lfo * t).sin()).clamp(eps, 1.0 - eps)
+        } else {
+            duty_c
+        };
+        out.push(if phase < d { amplitude } else { -amplitude });
+    }
+    Ok(out)
 }
 
 /// Karplus-Strong pluck: noise burst feeding a 1-sample averaging
@@ -1949,5 +2042,174 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(buf_blue.samples, buf_azure.samples);
+    }
+
+    // ───── PWM (pulse-width modulation) ─────
+
+    #[test]
+    fn pwm_duty_half_matches_square() {
+        // `duty=0.5` and no LFO is exactly the square wave at the same
+        // frequency — verify sample-by-sample equality so the
+        // generalisation is provably a strict superset.
+        let n = 2048;
+        let sr = 8000;
+        let freq = 440.0_f32;
+        let amp = 0.8_f32;
+        let p = pwm(freq, 0.5, 0.0, 0.0, sr, n, amp).unwrap();
+        let s = square(freq, sr, n, amp);
+        assert_eq!(p.len(), s.len());
+        for (i, (a, b)) in p.iter().zip(&s).enumerate() {
+            assert!((a - b).abs() < 1e-9, "sample {i}: pwm {a} != square {b}");
+        }
+    }
+
+    #[test]
+    fn pwm_takes_only_two_values_bounded_by_amplitude() {
+        // The wave is binary `{+amp, -amp}` by construction. Verify
+        // every sample is exactly one or the other.
+        let amp = 0.6_f32;
+        let buf = pwm(100.0, 0.3, 0.0, 0.0, 1000, 1000, amp).unwrap();
+        for &s in &buf {
+            assert!(
+                (s - amp).abs() < 1e-9 || (s + amp).abs() < 1e-9,
+                "non-binary sample {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn pwm_duty_controls_positive_fraction() {
+        // Over an integer number of periods at duty=d, the proportion
+        // of +amp samples should be ≈ d. Use a slow oscillator + a
+        // long-enough buffer so the discretisation noise stays small.
+        let sr = 1000;
+        let freq = 10.0_f32; // 100-sample period → exact integer.
+        let n = 10_000; // 100 full periods.
+        let amp = 1.0_f32;
+        for &d in &[0.1_f32, 0.25, 0.5, 0.75, 0.9] {
+            let buf = pwm(freq, d, 0.0, 0.0, sr, n, amp).unwrap();
+            let pos = buf.iter().filter(|&&v| v > 0.0).count() as f32 / n as f32;
+            // Per-period quantisation puts the realistic floor at ~1/100
+            // of a period; we allow a generous 2% tolerance.
+            assert!(
+                (pos - d).abs() < 0.02,
+                "duty {d}: positive fraction {pos} too far from target"
+            );
+        }
+    }
+
+    #[test]
+    fn pwm_duty_clamps_at_extremes() {
+        // duty=0 and duty=1 are clamped to ε / (1-ε) so the wave always
+        // has at least one sample of each polarity per period — silent
+        // DC would defeat the whole point.
+        for &d in &[0.0_f32, 1.0] {
+            let buf = pwm(100.0, d, 0.0, 0.0, 1000, 1000, 1.0).unwrap();
+            let any_pos = buf.iter().any(|&v| v > 0.0);
+            let any_neg = buf.iter().any(|&v| v < 0.0);
+            assert!(any_pos && any_neg, "duty {d} collapsed to DC");
+        }
+    }
+
+    #[test]
+    fn pwm_rejects_non_positive_freq() {
+        // Zero / negative frequency would divide by zero in the period
+        // calculation — the dispatcher must surface a clear error.
+        for &f in &[0.0_f32, -1.0, -100.0] {
+            let err = pwm(f, 0.5, 0.0, 0.0, 1000, 100, 1.0).unwrap_err();
+            assert!(format!("{err}").contains("pwm"), "missing 'pwm' in {err}");
+        }
+    }
+
+    #[test]
+    fn pwm_lfo_modulates_duty_over_time() {
+        // With a slow LFO and a meaningful depth, the proportion of +amp
+        // samples in the first quarter of the buffer (where the LFO is
+        // sweeping the duty upward through `duty + depth`) should differ
+        // from the proportion in the third quarter (where the LFO has
+        // pushed duty down through `duty − depth`). Static `lfo=0` could
+        // never produce a quarter-to-quarter difference, so this proves
+        // the modulation is actually active.
+        let sr = 8000;
+        let n = 8000; // 1 s
+        let amp = 1.0_f32;
+        // 1 Hz LFO over 1 s = one full LFO cycle. With duty=0.5 and
+        // depth=0.4, the threshold sweeps in [0.1, 0.9].
+        let buf = pwm(200.0, 0.5, 1.0, 0.4, sr, n, amp).unwrap();
+        // LFO phase at t = 0..0.25s is in [0, π/2] → sin in [0, 1] →
+        // duty in [0.5, 0.9] → mostly positive.
+        // LFO phase at t = 0.5..0.75s is in [π, 3π/2] → sin in [-1, 0] →
+        // duty in [0.1, 0.5] → mostly negative.
+        let q1: f32 = buf[..n / 4].iter().filter(|&&v| v > 0.0).count() as f32 / (n as f32 / 4.0);
+        let q3: f32 =
+            buf[n / 2..3 * n / 4].iter().filter(|&&v| v > 0.0).count() as f32 / (n as f32 / 4.0);
+        assert!(
+            q1 > q3 + 0.15,
+            "q1 positive ratio {q1} should exceed q3 {q3} by ≥0.15"
+        );
+    }
+
+    #[test]
+    fn pwm_dispatcher_default_keeps_bounds() {
+        // Default duration 1 s, default rate 8000 Hz, default freq 440,
+        // default duty 0.5 → square-wave path. Bounded by amplitude.
+        let buf = render(&map(&[("type", "pwm"), ("duration", "0.05")])).unwrap();
+        assert_eq!(buf.samples.len(), 400); // 8000 × 0.05
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn pwm_dispatcher_pulse_alias() {
+        // `type=pulse` is an accepted alias for `type=pwm`.
+        let a = render(&map(&[
+            ("type", "pwm"),
+            ("freq", "440"),
+            ("duty", "0.25"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        let b = render(&map(&[
+            ("type", "pulse"),
+            ("freq", "440"),
+            ("duty", "0.25"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        assert_eq!(a.samples, b.samples);
+    }
+
+    #[test]
+    fn pwm_listed_in_unknown_type_help() {
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        assert!(format!("{err}").contains("pwm"));
+    }
+
+    #[test]
+    fn pwm_first_sample_is_positive_for_default_duty() {
+        // sample 0 has phase = 0, which is always below any duty>0 ⇒
+        // the wave starts at +amplitude. This is the reference "pulse
+        // begins with the on-segment" convention; useful as a
+        // determinism anchor for downstream fixture tests.
+        let buf = pwm(440.0, 0.5, 0.0, 0.0, 8000, 16, 0.8).unwrap();
+        assert!((buf[0] - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pwm_sample_output_pinned() {
+        // Fixture: pin a known small render so future refactors of the
+        // dispatcher / clamp logic can't silently change the wire
+        // format. 8000 Hz, freq=1000 → 8 samples per period; duty=0.25
+        // means 2 samples positive, 6 samples negative per period.
+        // 16 samples = 2 full periods.
+        let buf = pwm(1000.0, 0.25, 0.0, 0.0, 8000, 16, 1.0).unwrap();
+        let want: Vec<f32> = vec![
+            // Period 0: samples 0,1 positive (phase 0/8, 1/8 < 0.25),
+            // samples 2..8 negative.
+            1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, // Period 1: same pattern.
+            1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
+        ];
+        assert_eq!(buf, want);
     }
 }
