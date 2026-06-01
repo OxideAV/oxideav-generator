@@ -1,9 +1,10 @@
 //! Gradient noise generators: classic Perlin 2-D (`type=perlin`) and
 //! Ken Perlin's improved simplex 2-D (`type=simplex`).
 //!
-//! Both are pure first-principles implementations — no spec and no
-//! external-library source. They share the seeded 512-entry
-//! permutation table (`build_perm`), so the same `seed=` is
+//! Both are pure first-principles implementations derived from the
+//! classical gradient-noise mathematics in Ken Perlin's published
+//! papers. They share the seeded 512-entry permutation table
+//! (`build_perm`), so the same `seed=` is
 //! bit-deterministic across builds for both kinds, and they share the
 //! multi-octave fBm accumulator and the palette mapping in [`render`].
 
@@ -94,7 +95,8 @@ fn perlin2(perm: &[u8; 512], x: f32, y: f32) -> f32 {
 /// C²-continuous with no directional bias. The `70.0` scale normalises
 /// the summed contributions back toward unit range.
 ///
-/// Pure first-principles maths — no spec, no external-library source.
+/// Pure first-principles maths transcribed from Ken Perlin's 2001
+/// SIGGRAPH note on improved noise.
 fn simplex2(perm: &[u8; 512], x: f32, y: f32) -> f32 {
     // Skew the input space to determine which simplex cell we're in.
     const F2: f32 = 0.366_025_42; // (sqrt(3) - 1) / 2

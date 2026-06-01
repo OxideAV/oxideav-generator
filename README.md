@@ -1,8 +1,9 @@
 # oxideav-generator
 
 Pure-Rust synthetic media generator for the oxideav framework. Provides
-audio synth (sine / square / triangle / sawtooth / pulse-width-modulated
-rectangle / Karplus-Strong pluck / linear + exponential chirp / FM / AM /
+audio synth (sine / square / triangle / sawtooth / supersaw
+(detuned-sawtooth stack) / pulse-width-modulated rectangle /
+Karplus-Strong pluck / linear + exponential chirp / FM / AM /
 ring modulation / DTMF touch-tones / ADSR-enveloped tone / Klatt-style
 two-formant vowel synthesizer / multi-tone /
 white-pink-brown-blue-violet noise / silence),
@@ -10,8 +11,9 @@ image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin + simplex gradient
 noise), and video
-(ffmpeg-style `testsrc`, SMPTE colour bars, animated Mandelbrot zoom,
-hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency probe).
+(classical broadcast `testsrc`, SMPTE colour bars, animated Mandelbrot
+zoom, hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency
+probe).
 
 Two integration shapes are exposed:
 
@@ -40,6 +42,7 @@ path produces frames natively.)
 ```
 generate://synth?type=sine&freq=440&duration=5
 generate://synth?type=square&freq=220&duration=2&amplitude=0.5
+generate://synth?type=supersaw&freq=440&voices=7&detune=12&duration=2
 generate://synth?type=pwm&freq=220&duty=0.25&duration=2
 generate://synth?type=pwm&freq=220&duty=0.5&lfo=2&depth=0.3&duration=3
 generate://synth?type=pluck&freq=440&decay=0.99&duration=3
@@ -110,6 +113,36 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 
 ## Status
 
+Round 12 (2026-06-01): audio synth gained `supersaw` (alias `saws`) —
+a detuned-sawtooth stack that piles `voices` (default 7, clamped to
+`[1, 32]`) sawtooth oscillators around a centre frequency `freq` Hz
+and equal-weight averages them. `detune=` is the half-spread in cents
+(1 cent = 1/100 of an equal-tempered semitone; default 12 cents) so
+voices are placed symmetrically over `[-detune, +detune]` with the
+middle voice landing exactly on `freq` for odd `voices`. The classic
+"supersaw" timbre (popularised by the 1996 Roland JP-8000) emerges
+from the slow chorus-like beating between near-but-not-quite-identical
+sawtooths: 7 voices × 12 cents in either direction gives ~5 % maximum
+frequency spread, audibly thick but tonally still anchored at `freq`.
+Per-voice frequencies are `freq · 2^(c_k / 1200)` for the chosen
+cent offsets. Output is the average of in-tree
+[`sawtooth`](crate::audio::synth::sawtooth) calls so the worst-case
+peak stays inside `[-amplitude, amplitude]` for every
+`(freq, voices, detune)` and every sample rate. Nine new tests cover
+(a) `voices=1` collapses to sample-equivalent in-tree `sawtooth`,
+(b) `detune=0` with any `voices` count likewise collapses (the average
+of identical voices), (c) bounded-amplitude invariant on a non-trivial
+44.1 kHz × 4096-sample render, (d) audible divergence from the centre
+saw at `voices=7, detune=12`, (e) `freq ≤ 0` erroring out,
+(f) `type=supersaw` / `type=saws` alias equivalence, (g) listing in
+the "unknown type" help, (h) `voices=100` clamping silently to 32,
+(i) the algebraic property that odd voice counts put the middle voice
+at 0 cents. Mathematical reference is Adam Szabo, *How to Emulate the
+Super Saw* (KTH Royal Institute of Technology MSc thesis, 2010) — a
+public academic spectral analysis of detuned-saw stacks. Pure
+first-principles DSP otherwise; the in-tree `sawtooth` is reused
+unchanged per voice.
+
 Round 11 (2026-06-01): audio synth gained `pwm` (alias `pulse`) —
 a pulse-width-modulated rectangular oscillator that generalises the
 fixed-50%-duty `square` wave. `duty=` in `(0, 1)` is the fraction of
@@ -134,10 +167,10 @@ apart), `freq ≤ 0` erroring out, the dispatcher `type=pwm` /
 `type=pulse` aliasing, the new mode being advertised in the
 "unknown type" help, and a pinned 16-sample fixture (freq=1 kHz,
 duty=0.25 → two-on / six-off per period). Pure first-principles
-DSP — no spec PDF, no external implementation read; references are
-textbook analogue-synth theory only (Moore, *Elements of Computer
-Music* 1990 ch.4 + the standard line-spectrum Fourier-series
-`∝ sin(π · k · d) / (π · k)` for a duty-`d` rectangular train).
+DSP; references are textbook analogue-synth theory (Moore, *Elements
+of Computer Music* 1990 ch.4 + the standard line-spectrum
+Fourier-series `∝ sin(π · k · d) / (π · k)` for a duty-`d`
+rectangular train).
 Also: integration test `tests/source_uri.rs` now matches
 `SourceOutput` exhaustively via a fall-through `_` arm — the
 upstream enum became `#[non_exhaustive]`, which had broken
@@ -164,7 +197,8 @@ samples stay inside `[−1, 1]` while still exercising a meaningful slice
 of the range (|v| > 0.3); another confirms simplex output now differs
 byte-for-byte from Perlin at the same seed/scale (it used to be
 identical). Same `seed=` is bit-deterministic across builds. Pure
-first-principles maths — no spec, no external-library source.
+first-principles maths transcribed from Ken Perlin's 2001 SIGGRAPH
+note on improved noise.
 
 Round 9 (2026-05-29): synth `noise` catalogue gained two new colours
 that complete the symmetric high-pass side of the family. `blue`
@@ -189,8 +223,7 @@ dominates white's by ≥5×, and violet's ratio is ≥1.5× steeper than
 blue's, both well clear of the asserted floors. Same seed produces
 identical samples (`Determinism` section's contract) and the
 dispatcher's `expected …` error message now lists all five colours.
-Pure first-principles DSP, no spec or external-library dependency.
-Reaches the URI path
+Pure first-principles DSP. Reaches the URI path
 (`generate://synth?type=noise&color=blue&seed=…`), the `synth:`
 shorthand, and the `audio.synth` filter through the existing
 dispatcher (no new registration).
@@ -208,16 +241,15 @@ index `m ∈ [0, 1]` (100 % modulation at `m=1`, pure half-amplitude
 carrier at `m=0`); out-of-range values are clamped at the dispatcher.
 The leading `0.5` keeps the worst-case `(1 + m)·1 = 2` at `m=1` inside
 `[-amplitude, amplitude]` for every `(fc, fm, index)` and every sample
-rate. Pure first-principles DSP, no spec or external-library dependency.
-Reaches the URI path (`generate://synth?type=am&carrier=…&modulator=…`),
+rate. Pure first-principles DSP. Reaches the URI path
+(`generate://synth?type=am&carrier=…&modulator=…`),
 the `synth:` shorthand, and the `audio.synth` filter through the
 existing dispatcher (no new registration).
 
 Round 7 (2026-05-25): synth catalogue gained `formant` (alias `vowel`)
 — a Klatt-style two-formant vowel synthesizer (after Klatt, 1980,
 "Software for a cascade/parallel formant synthesizer", JASA
-67(3):971-995 — paper is the public reference, no source-reading of any
-Klatt / Festival / espeak / mbrola / Praat implementation). A
+67(3):971-995 — the paper is the public reference). A
 glottal-pulse train at `f0=` (impulse every `Fs/f0` samples, lightly
 low-passed) drives two parallel 2-pole resonators tuned to the formant
 centres `(F1, F2)`, with the standard Klatt-normalised biquad
@@ -245,9 +277,9 @@ each — the carrier components at `f1` and `f2` are fully suppressed,
 which is exactly what distinguishes ring modulation from amplitude
 modulation (the latter keeps the carrier). Worst-case
 `|sin·sin| ≤ 1`, so the output stays bounded by `amplitude` for every
-`(f1, f2)` and every sample rate. Pure first-principles DSP, no spec
-or external-library dependency. Reaches the URI path
-(`generate://synth?type=ringmod&f1=…&f2=…`), the `synth:` shorthand,
+`(f1, f2)` and every sample rate. Pure first-principles DSP. Reaches
+the URI path (`generate://synth?type=ringmod&f1=…&f2=…`), the `synth:`
+shorthand,
 and the `audio.synth` filter through the existing dispatcher (no new
 registration).
 
@@ -261,8 +293,8 @@ decay ramp, a flat sustain hold, then a `sustain → 0` release ramp taken
 from the tail of the overall `duration=`, reaching exactly 0 at the final
 sample. Because the carrier runs at full amplitude and the envelope is
 bounded in `[0, 1]`, the output stays inside `[-amplitude, amplitude]`.
-Math-only piecewise-linear shaping; no spec or external-library
-dependency. Reaches the URI path, the `synth:` shorthand, and the
+Math-only piecewise-linear shaping. Reaches the URI path, the
+`synth:` shorthand, and the
 `audio.synth` filter through the existing dispatcher (no new
 registration).
 
@@ -273,17 +305,15 @@ low-group (697/770/852/941 Hz) and one high-group (1209/1336/1477/1633
 Hz) sine, both at half amplitude so an aligned peak stays bounded. Per-key
 on/off timing comes from `tone=` / `gap=` (seconds); the overall
 `duration=` is ignored — the length is derived from the dialled string.
-Frequency layout follows the ITU-T Q.23 / Q.24 keypad. Math-only, no
-spec dependency.
+Frequency layout follows the ITU-T Q.23 / Q.24 keypad. Math-only.
 
 Round 3 (2026-05-20): synth catalogue grew chirp / FM / multitone
 modes (linear + exponential frequency sweeps; classical 2-operator
 frequency modulation; equal-weight tone sums). Video catalogue
 gained `zoneplate` — `cos(k·r²)` radial chirp, optional
 `motion=temporal|horizontal|vertical` to animate it without
-changing structure. All three additions are math-only (no spec
-dependency); useful for codec PSNR / motion-search / spatial-
-frequency probes.
+changing structure. All three additions are math-only; useful for
+codec PSNR / motion-search / spatial-frequency probes.
 
 Round 2 (2026-05-02): URI source path migrated to the new typed
 `SourceRegistry` `FrameSource` shape — every `generate://…` URI returns

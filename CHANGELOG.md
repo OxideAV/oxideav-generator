@@ -8,6 +8,36 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained `supersaw` (alias `saws`) — a detuned-sawtooth
+  stack that piles `voices` sawtooth oscillators around a centre
+  frequency `freq` Hz and equal-weight averages them. `voices` defaults
+  to 7 (clamped to `[1, 32]`); `detune=` is the half-spread in cents
+  (1 cent = 1/100 of an equal-tempered semitone; default 12 cents) so
+  the voices are placed symmetrically over `[-detune, +detune]` with
+  the middle voice landing exactly on `freq` for odd `voices`. Per-voice
+  frequencies are `freq · 2^(c_k / 1200)` for the chosen cent offsets.
+  Output is the equal-weight average of in-tree
+  [`sawtooth`](crate::audio::synth::sawtooth) calls so the worst-case
+  peak stays inside `[-amplitude, amplitude]` for every
+  `(freq, voices, detune)` and every sample rate. The classic
+  "supersaw" timbre (popularised by the 1996 Roland JP-8000) emerges
+  from the slow chorus-like beating between the slightly-detuned
+  sawtooths; `7 voices × 12 cents` gives ~5 % maximum frequency spread,
+  audibly thick but tonally still anchored on `freq`. Tests cover (a)
+  `voices=1` collapsing to in-tree `sawtooth` sample-for-sample, (b)
+  any `voices` at `detune=0` likewise collapsing (`/voices` average of
+  identical voices), (c) bounded-amplitude invariant on a non-trivial
+  44.1 kHz × 4096-sample render, (d) audible divergence from the
+  centre saw at `voices=7, detune=12`, (e) `freq ≤ 0` erroring out,
+  (f) `type=supersaw` / `type=saws` aliasing, (g) listing in the
+  "unknown type" help, (h) `voices=100` silently clamping to 32,
+  (i) the algebraic identity that odd voice counts put the middle
+  voice exactly at 0 cents. Mathematical reference is Adam Szabo,
+  *How to Emulate the Super Saw* (KTH Royal Institute of Technology
+  MSc thesis, 2010) — a public academic spectral analysis of
+  detuned-saw stacks. Pure first-principles DSP otherwise; the
+  in-tree `sawtooth` is reused unchanged per voice.
+
 - Audio synth gained `pwm` (alias `pulse`) — a pulse-width-modulated
   rectangular oscillator that generalises the fixed-50%-duty `square`
   wave. `duty=` in `(0, 1)` is the fraction of each period the signal
@@ -33,11 +63,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   new mode in the "unknown type" help, and (i) a pinned 16-sample
   fixture (freq=1 kHz, duty=0.25 → two-on / six-off per period) so
   future refactors can't silently change the wire format. Pure
-  first-principles DSP — no spec PDF, no external implementation
-  read; references are textbook analogue-synth theory only (Moore,
-  *Elements of Computer Music* 1990 ch.4 + the standard line-spectrum
-  Fourier-series result `∝ sin(π · k · d) / (π · k)` for a duty-`d`
-  rectangular train).
+  first-principles DSP; references are textbook analogue-synth theory
+  (Moore, *Elements of Computer Music* 1990 ch.4 + the standard
+  line-spectrum Fourier-series result `∝ sin(π · k · d) / (π · k)`
+  for a duty-`d` rectangular train).
 
 ### Changed
 
@@ -81,7 +110,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   meaningful slice of the range; another asserts simplex output now
   differs byte-for-byte from Perlin at the same seed/scale. Same
   `seed=` is bit-deterministic across builds. Pure first-principles
-  maths — no spec, no external-library source.
+  maths transcribed from Ken Perlin's 2001 SIGGRAPH note on improved
+  noise.
 
 ### Changed
 
@@ -117,7 +147,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   `unknown_noise_color_errors` test (which used `purple` as its
   unknown-colour sentinel) now uses `chartreuse` instead, since
   `purple` is a documented alias for violet. Pure first-principles
-  DSP, no spec or external-library dependency; reaches the URI path
+  DSP; reaches the URI path
   (`generate://synth?type=noise&color=blue|violet|azure|purple`),
   the `synth:` shorthand, and the `audio.synth` filter through the
   existing dispatcher (no new registration).
@@ -135,16 +165,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   `0.5` keeps the worst-case envelope `(1 + m)·1 ≤ 2` at `m=1` inside
   `[-amplitude, amplitude]` for every `(fc, fm, index)` and every
   sample rate (sample-wise bounds verified at `m ∈ {0, 0.25, 0.5, 0.75,
-  1}`). Pure first-principles DSP, no spec or external-library
-  dependency; reaches the URI path
+  1}`). Pure first-principles DSP; reaches the URI path
   (`generate://synth?type=am&carrier=…&modulator=…&index=…`), the
   `synth:` shorthand, and the `audio.synth` filter through the
   existing dispatcher (no new registration). Default carrier/modulator
   ratio mirrors the `fm` mode (2:1), default index is `0.5`.
 - Audio synth gained a `formant` (alias `vowel`) mode — a Klatt-style
   two-formant vowel synthesizer (after Klatt 1980, JASA 67(3):971-995;
-  the paper is the public reference, no source-reading of any Klatt /
-  Festival / espeak / mbrola / Praat implementation). Architecture: a
+  the paper is the public reference). Architecture: a
   glottal-pulse train at the fundamental `f0=` (an impulse every
   `Fs/f0` samples, lightly low-passed with `0.5·(x[n]+x[n-1])`) drives
   two parallel 2-pole resonators tuned to the formant centres `(F1,
@@ -176,8 +204,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   suppressed, which is what distinguishes ring modulation from
   amplitude modulation. Worst case `|sin · sin| ≤ 1` so the output is
   bounded by `amplitude` for every `(f1, f2)` and every sample rate.
-  Pure first-principles DSP, no spec or external-library dependency;
-  exposed through the URI path
+  Pure first-principles DSP; exposed through the URI path
   (`generate://synth?type=ringmod&f1=…&f2=…`), the `synth:` shorthand,
   and the `audio.synth` filter through the existing dispatcher (no new
   registration).
@@ -192,8 +219,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   start clamped so it never begins before the attack ends. The carrier
   runs at full amplitude and the envelope stays in `[0, 1]`, so the
   output is bounded by `[-amplitude, amplitude]`. An unsupported `wave=`
-  is an error. Pure first-principles DSP, no spec or external-library
-  dependency; reaches the URI path, the `synth:` shorthand, and the
+  is an error. Pure first-principles DSP; reaches the URI path, the
+  `synth:` shorthand, and the
   `audio.synth` filter through the existing dispatcher (no new
   registration).
 - Audio synth gained a `dtmf` mode — telephone touch-tone dual-tone
@@ -205,9 +232,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   `tone=` / `gap=` (seconds); the overall `duration=` is ignored — the
   length is derived from the dialled string. An unrecognised key is an
   error rather than silently emitting nothing. Frequency layout follows
-  the ITU-T Q.23 / Q.24 keypad; pure first-principles DSP, no spec or
-  external-library dependency. Exposed via the existing `synth:`
-  shorthand and `audio.synth` filter (no new registration).
+  the ITU-T Q.23 / Q.24 keypad; pure first-principles DSP. Exposed
+  via the existing `synth:` shorthand and `audio.synth` filter (no
+  new registration).
 - Audio synth gained three modes:
   - `chirp` / `sweep` — linear or exponential frequency sweep
     between `f0` and `f1`; phase is integrated sample-by-sample so
@@ -327,14 +354,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   checkerboard / horizontal / vertical stripes, Mandelbrot + Julia
   fractals, plasma via diamond-square, fBm Perlin noise) emitting
   PNG bytes via an in-tree minimal PNG writer (uncompressed deflate).
-- Video generators (ffmpeg-style `testsrc`, SMPTE 75% colour bars,
+- Video generators (classical broadcast-style `testsrc`, SMPTE 75% colour bars,
   animated Mandelbrot zoom, hue-rotating gradient) wired through the
   filter API; the URI source path for video returns a clear
   "unsupported until we add a Y4M demuxer" error.
 - Zero-input filter wrappers for every generator, registered as
   `audio.synth`, `image.{xc,gradient,pattern,fractal,plasma,noise}`,
   `video.{testsrc,smptebars,fractal_zoom,gradient_animate}`.
-- ImageMagick / sox style CLI shorthand translator
+- Colon-prefixed terse-CLI shorthand translator
   (`xc:red`, `gradient:red-blue`, `synth:5,sine,440`, …) under
   `oxideav_generator::shorthand::translate`.
 - Hand-rolled CSS colour parser (named colours + `#RGB(A)` /

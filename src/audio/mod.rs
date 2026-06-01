@@ -9,7 +9,8 @@ pub mod synth;
 
 /// Single-sample f32 → i16 with hard clipping at the i16 endpoints.
 ///
-/// Maps `-1.0 → -32768`, `+1.0 → +32767` (sox / aplay convention).
+/// Maps `-1.0 → -32768`, `+1.0 → +32767` — the standard asymmetric
+/// signed-PCM mapping used everywhere from WAV / AIFF on down.
 /// Used by the URI [`FrameSource`](oxideav_core::FrameSource) wrapper
 /// and by the zero-input filter wrapper to materialise PCM bytes from
 /// the f32 mixing buffer.

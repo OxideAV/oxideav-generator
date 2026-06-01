@@ -2,9 +2,10 @@
 //!
 //! Renders a string to an RGBA8 canvas using `oxideav-scribe` (vector
 //! shaping → positioned glyph nodes) plus `oxideav-raster` (vector →
-//! pixels). Mirrors ImageMagick's `label:Hello world` source: produces
-//! a still image sized to the rendered text plus padding (or to an
-//! explicit `w=… h=…` if the caller provides them).
+//! pixels). Follows the conventional terse `label:Hello world`
+//! shorthand familiar from classical CLI image tools: produces a still
+//! image sized to the rendered text plus padding (or to an explicit
+//! `w=… h=…` if the caller provides them).
 //!
 //! Default font is the bundled DejaVu Sans Mono (~340 KB). Pass
 //! `font=/path/to/your.ttf` to override.

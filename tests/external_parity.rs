@@ -1,10 +1,12 @@
-//! Structural parity with ffmpeg's `lavfi` test sources.
+//! Structural parity for the classical broadcast-engineering test
+//! pattern (vertical colour bars + moving time bar + frame counter)
+//! and the SMPTE colour-bars pattern.
 //!
-//! We don't bit-compare against ffmpeg (different generator
-//! implementations). The plan only asks for *structural* parity —
-//! frame count, dimensions, pixel format. These tests pin those
-//! invariants so a regression in our generator code is caught
-//! without depending on ffmpeg being installed.
+//! The pixel layout isn't pinned to any external renderer (different
+//! generators produce different exact bytes); the plan only asks for
+//! *structural* parity — frame count, dimensions, pixel format. These
+//! tests pin those invariants so an in-tree regression is caught
+//! without depending on any third-party renderer being installed.
 
 use std::collections::BTreeMap;
 

@@ -23,30 +23,31 @@
 //!
 //! ## CLI shorthands
 //!
-//! [`shorthand::translate`] takes ImageMagick / sox style inputs
-//! (`xc:red`, `gradient:red-blue`, `synth:5,sine,440`, `testsrc:`, …)
-//! and rewrites them to canonical `generate://...` URIs. The CLI's
-//! `convert` verb runs every input through this translator before
-//! handing it to the source registry. Other verbs (probe / transcode /
-//! remux / run) accept the canonical URI form only.
+//! [`shorthand::translate`] takes short, colon-prefixed CLI inputs in the
+//! traditional Unix media-tool style — `xc:red`, `gradient:red-blue`,
+//! `synth:5,sine,440`, `testsrc:` — and rewrites them to canonical
+//! `generate://...` URIs. The CLI's `convert` verb runs every input
+//! through this translator before handing it to the source registry.
+//! Other verbs (probe / transcode / remux / run) accept the canonical
+//! URI form only.
 //!
 //! ## Catalog
 //!
-//! - **Audio** — sine / square / triangle / sawtooth / pwm (pulse-width
-//!   modulated rectangular wave) / pluck (Karplus-Strong) / chirp (linear
-//!   or exponential sweep) / fm (frequency modulation) / dtmf (telephone
-//!   touch-tones) / formant (Klatt-style two-formant vowel synthesizer) /
-//!   multitone (sum of sines) / white-pink-brown-blue-violet noise /
-//!   silence.
+//! - **Audio** — sine / square / triangle / sawtooth / supersaw
+//!   (detuned-sawtooth stack) / pwm (pulse-width modulated rectangular
+//!   wave) / pluck (Karplus-Strong) / chirp (linear or exponential
+//!   sweep) / fm (frequency modulation) / dtmf (telephone touch-tones) /
+//!   formant (Klatt-style two-formant vowel synthesizer) / multitone
+//!   (sum of sines) / white-pink-brown-blue-violet noise / silence.
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,
 //!   checkerboard / horizontal / vertical / diagonal patterns.
 //! - **Procedural images** — Mandelbrot + Julia fractals, plasma
 //!   (recursive midpoint displacement), Perlin noise.
-//! - **Video** — `testsrc` (ffmpeg-equivalent timestamp + colour bars +
-//!   circle), `smptebars` (SMPTE 75% colour bars), `fractal_zoom`
-//!   (animated Mandelbrot zoom), `gradient_animate` (hue-rotating
-//!   gradient), `zoneplate` (radial cos(k·r²) chirp — spatial-frequency
-//!   probe).
+//! - **Video** — `testsrc` (animated timestamp + colour bars + circle —
+//!   the classical broadcast-engineering test signal), `smptebars`
+//!   (SMPTE 75% colour bars), `fractal_zoom` (animated Mandelbrot zoom),
+//!   `gradient_animate` (hue-rotating gradient), `zoneplate` (radial
+//!   `cos(k·r²)` chirp — spatial-frequency probe).
 
 #![allow(clippy::too_many_arguments)]
 
