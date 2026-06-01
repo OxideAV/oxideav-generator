@@ -1,11 +1,11 @@
-//! ffmpeg-style `testsrc`: vertical SMPTE-ish colour bars + a moving
-//! horizontal time bar + a per-frame frame counter shown as a square
-//! marker.
+//! Classical `testsrc` broadcast test pattern: vertical SMPTE-ish
+//! colour bars + a moving horizontal time bar + a per-frame frame
+//! counter shown as a square marker.
 //!
-//! The exact pixel layout doesn't have to match ffmpeg bit-for-bit
-//! (the plan calls for *structural* parity — frame count, dims,
-//! pixel format) — what matters is that the stream is recognisable
-//! as a test pattern and changes per frame.
+//! The exact pixel layout isn't pinned to any reference renderer (the
+//! plan calls for *structural* parity only — frame count, dimensions,
+//! pixel format). What matters is that the stream is recognisable as a
+//! test pattern and changes per frame.
 
 use std::collections::BTreeMap;
 

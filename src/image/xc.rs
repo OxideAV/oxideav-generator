@@ -1,4 +1,6 @@
-//! Solid colour generator (`xc:` — ImageMagick "constant colour" canvas).
+//! Solid colour generator (`xc:` — the traditional constant-colour
+//! canvas shorthand from classical CLI image tools; "xc" stands for
+//! "X constant colour").
 
 use std::collections::BTreeMap;
 

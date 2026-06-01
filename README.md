@@ -1,8 +1,9 @@
 # oxideav-generator
 
 Pure-Rust synthetic media generator for the oxideav framework. Provides
-audio synth (sine / square / triangle / sawtooth / pulse-width-modulated
-rectangle / Karplus-Strong pluck / linear + exponential chirp / FM / AM /
+audio synth (sine / square / triangle / sawtooth / supersaw
+(detuned-sawtooth stack) / pulse-width-modulated rectangle /
+Karplus-Strong pluck / linear + exponential chirp / FM / AM /
 ring modulation / DTMF touch-tones / ADSR-enveloped tone / Klatt-style
 two-formant vowel synthesizer / multi-tone /
 white-pink-brown-blue-violet noise / silence),
@@ -10,8 +11,9 @@ image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin + simplex gradient
 noise), and video
-(ffmpeg-style `testsrc`, SMPTE colour bars, animated Mandelbrot zoom,
-hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency probe).
+(classical broadcast `testsrc`, SMPTE colour bars, animated Mandelbrot
+zoom, hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency
+probe).
 
 Two integration shapes are exposed:
 
@@ -40,6 +42,7 @@ path produces frames natively.)
 ```
 generate://synth?type=sine&freq=440&duration=5
 generate://synth?type=square&freq=220&duration=2&amplitude=0.5
+generate://synth?type=supersaw&freq=440&voices=7&detune=12&duration=2
 generate://synth?type=pwm&freq=220&duty=0.25&duration=2
 generate://synth?type=pwm&freq=220&duty=0.5&lfo=2&depth=0.3&duration=3
 generate://synth?type=pluck&freq=440&decay=0.99&duration=3
@@ -109,6 +112,36 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 12 (2026-06-01): audio synth gained `supersaw` (alias `saws`) —
+a detuned-sawtooth stack that piles `voices` (default 7, clamped to
+`[1, 32]`) sawtooth oscillators around a centre frequency `freq` Hz
+and equal-weight averages them. `detune=` is the half-spread in cents
+(1 cent = 1/100 of an equal-tempered semitone; default 12 cents) so
+voices are placed symmetrically over `[-detune, +detune]` with the
+middle voice landing exactly on `freq` for odd `voices`. The classic
+"supersaw" timbre (popularised by the 1996 Roland JP-8000) emerges
+from the slow chorus-like beating between near-but-not-quite-identical
+sawtooths: 7 voices × 12 cents in either direction gives ~5 % maximum
+frequency spread, audibly thick but tonally still anchored at `freq`.
+Per-voice frequencies are `freq · 2^(c_k / 1200)` for the chosen
+cent offsets. Output is the average of in-tree
+[`sawtooth`](crate::audio::synth::sawtooth) calls so the worst-case
+peak stays inside `[-amplitude, amplitude]` for every
+`(freq, voices, detune)` and every sample rate. Nine new tests cover
+(a) `voices=1` collapses to sample-equivalent in-tree `sawtooth`,
+(b) `detune=0` with any `voices` count likewise collapses (the average
+of identical voices), (c) bounded-amplitude invariant on a non-trivial
+44.1 kHz × 4096-sample render, (d) audible divergence from the centre
+saw at `voices=7, detune=12`, (e) `freq ≤ 0` erroring out,
+(f) `type=supersaw` / `type=saws` alias equivalence, (g) listing in
+the "unknown type" help, (h) `voices=100` clamping silently to 32,
+(i) the algebraic property that odd voice counts put the middle voice
+at 0 cents. Mathematical reference is Adam Szabo, *How to Emulate the
+Super Saw* (KTH Royal Institute of Technology MSc thesis, 2010) — a
+public academic spectral analysis of detuned-saw stacks; no
+implementation source consulted. Pure first-principles DSP otherwise;
+the in-tree `sawtooth` is reused unchanged per voice.
 
 Round 11 (2026-06-01): audio synth gained `pwm` (alias `pulse`) —
 a pulse-width-modulated rectangular oscillator that generalises the

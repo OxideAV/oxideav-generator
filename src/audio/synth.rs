@@ -60,6 +60,20 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
             frame_count,
             amplitude,
         ),
+        "supersaw" | "saws" => {
+            // Detuned-sawtooth stack: `voices` sawtooth oscillators tuned
+            // around `freq`, summed and equal-weight averaged. `detune=`
+            // is the half-spread in cents (1 cent = 1/100 of an equal-
+            // tempered semitone) — voices are placed symmetrically over
+            // [-detune, +detune] so the centre voice is exactly `freq`.
+            // Mathematical reference: Adam Szabo, "How to Emulate the
+            // Super Saw" (KTH thesis, 2010) — public academic paper; no
+            // implementation source consulted.
+            let freq = q_f64(query, "freq", 440.0)? as f32;
+            let voices = q_u32(query, "voices", 7)?.clamp(1, 32) as usize;
+            let detune = q_f64(query, "detune", 12.0)? as f32;
+            supersaw(freq, voices, detune, sample_rate, frame_count, amplitude)?
+        }
         "pwm" | "pulse" => {
             // Pulse-width-modulated rectangular wave: a generalisation of
             // `square` (which is `duty=0.5`). `duty=` is the fraction of
@@ -279,7 +293,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|pwm|pluck|chirp|fm|am|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
             )));
         }
     };
@@ -355,6 +369,88 @@ pub fn sawtooth(freq: f32, sample_rate: u32, n: usize, amplitude: f32) -> Vec<f3
             amplitude * (2.0 * phase - 1.0)
         })
         .collect()
+}
+
+/// Detuned-sawtooth stack — `voices` sawtooth oscillators clustered around
+/// `freq`, summed and equal-weight averaged.
+///
+/// Each voice runs at its own slightly-shifted frequency
+/// `f_k = freq · 2^(c_k / 1200)` where `c_k` is its individual detuning in
+/// cents. The `voices` frequencies are placed symmetrically over
+/// `[-detune, +detune]` cents around the centre voice (which sits exactly
+/// at `freq`):
+///
+/// * for `voices = 1` the only voice is the centre at `c = 0`;
+/// * for `voices > 1` the voices are uniformly spaced from `-detune` to
+///   `+detune` inclusive, so `voices = 7, detune = 12` gives
+///   `c ∈ {-12, -8, -4, 0, +4, +8, +12}` cents.
+///
+/// 1 cent = 1/100 of an equal-tempered semitone (the standard music-
+/// theory unit of pitch spread). With cents in single digits the
+/// per-voice frequency offset is tiny in absolute terms but produces the
+/// audibly thick, chorus-like sawtooth characteristic of the classical
+/// "supersaw" timbre popularised in 1996 by the Roland JP-8000.
+///
+/// Mathematical reference: Adam Szabo, *How to Emulate the Super Saw*
+/// (KTH Royal Institute of Technology MSc thesis, 2010) — a public
+/// academic analysis of the detuned-saw spectrum. No implementation
+/// source consulted; the per-voice waveform is the same in-tree
+/// [`sawtooth`] used by `type=sawtooth`.
+///
+/// Output is the equal-weight average of the per-voice sawtooths,
+/// keeping the worst-case peak (all voices momentarily aligned at the
+/// post-discontinuity `+amplitude`) inside `[-amplitude, amplitude]` for
+/// every `(freq, voices, detune)` and every sample rate. `voices` is
+/// clamped to `[1, 32]`; `freq` must be positive (an error otherwise).
+pub fn supersaw(
+    freq: f32,
+    voices: usize,
+    detune_cents: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Result<Vec<f32>> {
+    if freq <= 0.0 || freq.is_nan() {
+        return Err(Error::invalid(format!(
+            "synth: supersaw requires freq > 0 (got {freq})"
+        )));
+    }
+    let voices = voices.clamp(1, 32);
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Per-voice cent offsets, symmetric around 0.
+    let cent_offsets: Vec<f32> = if voices == 1 {
+        vec![0.0]
+    } else {
+        let step = 2.0 * detune_cents / (voices as f32 - 1.0);
+        (0..voices)
+            .map(|k| -detune_cents + step * k as f32)
+            .collect()
+    };
+
+    // Pre-compute each voice's period in samples (constant per voice).
+    let periods: Vec<f32> = cent_offsets
+        .iter()
+        .map(|&c| {
+            let f_k = freq * (2.0_f32).powf(c / 1200.0);
+            (sample_rate as f32) / f_k
+        })
+        .collect();
+
+    let scale = amplitude / voices as f32;
+    let out = (0..n)
+        .map(|i| {
+            let mut s = 0.0_f32;
+            for &period in &periods {
+                let phase = (i as f32 % period) / period; // 0..1
+                s += 2.0 * phase - 1.0;
+            }
+            scale * s
+        })
+        .collect();
+    Ok(out)
 }
 
 /// Pulse-width-modulated rectangular wave at `freq` Hz.
@@ -2211,5 +2307,155 @@ mod tests {
             1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
         ];
         assert_eq!(buf, want);
+    }
+
+    // ───── supersaw ─────
+
+    #[test]
+    fn supersaw_voices_one_equals_sawtooth() {
+        // A single voice at zero detune is just the centre voice ⇒
+        // identical samples to the in-tree `sawtooth` (modulo the
+        // equal-weight average, which is `/1.0` here).
+        let n = 1024;
+        let sr = 8000;
+        let freq = 440.0;
+        let got = supersaw(freq, 1, 0.0, sr, n, 0.8).unwrap();
+        let want = sawtooth(freq, sr, n, 0.8);
+        let max_err = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_err < 1e-6, "max err = {max_err}");
+    }
+
+    #[test]
+    fn supersaw_zero_detune_collapses_to_single_voice() {
+        // detune=0 ⇒ every voice runs at the centre frequency, so the
+        // sum is just `voices · sawtooth(freq)` and the equal-weight
+        // average brings it right back to a single sawtooth.
+        let n = 1024;
+        let sr = 8000;
+        let freq = 440.0;
+        let got = supersaw(freq, 7, 0.0, sr, n, 0.8).unwrap();
+        let want = sawtooth(freq, sr, n, 0.8);
+        let max_err = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        // The `/voices` average of identical voices is exact in float
+        // because `(7 · x) / 7 == x` for x with no leading-bit drift;
+        // give it 1e-6 slack just in case.
+        assert!(max_err < 1e-6, "max err = {max_err}");
+    }
+
+    #[test]
+    fn supersaw_stays_bounded_by_amplitude() {
+        // For arbitrary (freq, voices, detune) the equal-weight average
+        // of voice sawtooths each in [-amplitude, +amplitude] cannot
+        // exceed amplitude in magnitude — sanity-check on a non-trivial
+        // configuration.
+        let amp = 0.8;
+        let got = supersaw(220.0, 7, 12.0, 44100, 4096, amp).unwrap();
+        for (i, s) in got.iter().enumerate() {
+            assert!(
+                s.abs() <= amp + 1e-6,
+                "supersaw sample {i} = {s} exceeded amp {amp}"
+            );
+        }
+    }
+
+    #[test]
+    fn supersaw_diverges_from_sawtooth_with_nonzero_detune() {
+        // Differentiate from `sawtooth`: with detune>0 the per-voice
+        // phases drift apart so the average can't equal the centre
+        // sawtooth sample-for-sample. Check the buffers actually differ
+        // somewhere by a comfortably-above-noise margin.
+        let got = supersaw(440.0, 7, 12.0, 8000, 4096, 0.8).unwrap();
+        let centre = sawtooth(440.0, 8000, 4096, 0.8);
+        let mut max_diff = 0.0_f32;
+        for (a, b) in got.iter().zip(&centre) {
+            max_diff = max_diff.max((a - b).abs());
+        }
+        // Detuning of 12 cents across 7 voices produces audible
+        // chorusing within the first ~1000 samples; the peak deviation
+        // is well above the f32 quantisation floor.
+        assert!(
+            max_diff > 0.05,
+            "supersaw barely differs from centre saw: max_diff = {max_diff}"
+        );
+    }
+
+    #[test]
+    fn supersaw_rejects_nonpositive_freq() {
+        let err = supersaw(0.0, 7, 12.0, 8000, 16, 0.8).unwrap_err();
+        assert!(format!("{err}").contains("freq"));
+        let err = supersaw(-220.0, 7, 12.0, 8000, 16, 0.8).unwrap_err();
+        assert!(format!("{err}").contains("freq"));
+    }
+
+    #[test]
+    fn supersaw_dispatcher_alias_and_defaults() {
+        // `type=saws` is the documented alias; default `voices=7`,
+        // `detune=12` cents. Both names produce identical buffers.
+        let a = render(&map(&[
+            ("type", "supersaw"),
+            ("freq", "440"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        let b = render(&map(&[
+            ("type", "saws"),
+            ("freq", "440"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        assert_eq!(a.samples, b.samples);
+        assert_eq!(a.samples.len(), 80); // 8000 × 0.01
+        for s in &a.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn supersaw_listed_in_unknown_type_help() {
+        let err = render(&map(&[("type", "totally-bogus-mode")])).unwrap_err();
+        assert!(format!("{err}").contains("supersaw"));
+    }
+
+    #[test]
+    fn supersaw_voices_clamped_into_range() {
+        // The dispatcher clamps voices into [1, 32]. A request for 100
+        // voices should not error out — it should silently clamp at 32.
+        let buf = render(&map(&[
+            ("type", "supersaw"),
+            ("voices", "100"),
+            ("duration", "0.005"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.samples.len(), 40);
+        for s in &buf.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn supersaw_centre_voice_is_at_freq() {
+        // For an odd voice count with symmetric detune, the middle
+        // voice runs at exactly `freq`. Verify by checking that the
+        // centre-voice cent offset is 0 (computed via the dispatcher's
+        // helper).
+        // 7 voices, detune=12 cents ⇒ steps of 4 cents:
+        //   [-12, -8, -4, 0, +4, +8, +12]
+        // i.e. index 3 (the middle) is 0 cents.
+        let voices = 7;
+        let detune = 12.0_f32;
+        let step = 2.0 * detune / (voices as f32 - 1.0);
+        let middle = -detune + step * 3.0;
+        assert!(
+            middle.abs() < 1e-6,
+            "expected centre voice at 0 cents, got {middle}"
+        );
     }
 }

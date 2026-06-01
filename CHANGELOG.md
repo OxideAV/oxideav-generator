@@ -8,6 +8,37 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained `supersaw` (alias `saws`) — a detuned-sawtooth
+  stack that piles `voices` sawtooth oscillators around a centre
+  frequency `freq` Hz and equal-weight averages them. `voices` defaults
+  to 7 (clamped to `[1, 32]`); `detune=` is the half-spread in cents
+  (1 cent = 1/100 of an equal-tempered semitone; default 12 cents) so
+  the voices are placed symmetrically over `[-detune, +detune]` with
+  the middle voice landing exactly on `freq` for odd `voices`. Per-voice
+  frequencies are `freq · 2^(c_k / 1200)` for the chosen cent offsets.
+  Output is the equal-weight average of in-tree
+  [`sawtooth`](crate::audio::synth::sawtooth) calls so the worst-case
+  peak stays inside `[-amplitude, amplitude]` for every
+  `(freq, voices, detune)` and every sample rate. The classic
+  "supersaw" timbre (popularised by the 1996 Roland JP-8000) emerges
+  from the slow chorus-like beating between the slightly-detuned
+  sawtooths; `7 voices × 12 cents` gives ~5 % maximum frequency spread,
+  audibly thick but tonally still anchored on `freq`. Tests cover (a)
+  `voices=1` collapsing to in-tree `sawtooth` sample-for-sample, (b)
+  any `voices` at `detune=0` likewise collapsing (`/voices` average of
+  identical voices), (c) bounded-amplitude invariant on a non-trivial
+  44.1 kHz × 4096-sample render, (d) audible divergence from the
+  centre saw at `voices=7, detune=12`, (e) `freq ≤ 0` erroring out,
+  (f) `type=supersaw` / `type=saws` aliasing, (g) listing in the
+  "unknown type" help, (h) `voices=100` silently clamping to 32,
+  (i) the algebraic identity that odd voice counts put the middle
+  voice exactly at 0 cents. Mathematical reference is Adam Szabo,
+  *How to Emulate the Super Saw* (KTH Royal Institute of Technology
+  MSc thesis, 2010) — a public academic spectral analysis of
+  detuned-saw stacks; no implementation source consulted. Pure
+  first-principles DSP otherwise; the in-tree `sawtooth` is reused
+  unchanged per voice.
+
 - Audio synth gained `pwm` (alias `pulse`) — a pulse-width-modulated
   rectangular oscillator that generalises the fixed-50%-duty `square`
   wave. `duty=` in `(0, 1)` is the fraction of each period the signal
@@ -327,14 +358,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   checkerboard / horizontal / vertical stripes, Mandelbrot + Julia
   fractals, plasma via diamond-square, fBm Perlin noise) emitting
   PNG bytes via an in-tree minimal PNG writer (uncompressed deflate).
-- Video generators (ffmpeg-style `testsrc`, SMPTE 75% colour bars,
+- Video generators (classical broadcast-style `testsrc`, SMPTE 75% colour bars,
   animated Mandelbrot zoom, hue-rotating gradient) wired through the
   filter API; the URI source path for video returns a clear
   "unsupported until we add a Y4M demuxer" error.
 - Zero-input filter wrappers for every generator, registered as
   `audio.synth`, `image.{xc,gradient,pattern,fractal,plasma,noise}`,
   `video.{testsrc,smptebars,fractal_zoom,gradient_animate}`.
-- ImageMagick / sox style CLI shorthand translator
+- Colon-prefixed terse-CLI shorthand translator
   (`xc:red`, `gradient:red-blue`, `synth:5,sine,440`, …) under
   `oxideav_generator::shorthand::translate`.
 - Hand-rolled CSS colour parser (named colours + `#RGB(A)` /

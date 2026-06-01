@@ -1,8 +1,8 @@
-//! ImageMagick / sox style CLI shorthand → canonical `generate://`
-//! URI translator.
+//! Colon-prefixed CLI shorthand → canonical `generate://` URI
+//! translator (in the traditional terse media-tool style: `xc:red`,
+//! `synth:5,sine,440`).
 //!
-//! Recognised prefixes (case-sensitive — IM/sox use lowercase by
-//! convention):
+//! Recognised prefixes (case-sensitive, lowercase by convention):
 //!
 //! | Shorthand                | Canonical                                       |
 //! |--------------------------|-------------------------------------------------|
@@ -145,10 +145,11 @@ fn translate_gradient(rest: &str, radial: bool) -> String {
     }
 }
 
-/// `5,sine,440` → `type=sine&freq=440&duration=5`. Order matches sox:
-/// `synth DURATION TYPE FREQ`. Extra positional args after `freq` are
-/// ignored (we may add them in a follow-up); explicit `KEY=VALUE` pairs
-/// after `freq` are appended verbatim.
+/// `5,sine,440` → `type=sine&freq=440&duration=5`. The positional order
+/// is the classical terse-CLI convention DURATION, TYPE, FREQ; extra
+/// positional args after `freq` are ignored (we may add them in a
+/// follow-up). Explicit `KEY=VALUE` pairs after `freq` are appended
+/// verbatim.
 fn translate_synth(rest: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut positional: Vec<&str> = Vec::new();
@@ -159,7 +160,8 @@ fn translate_synth(rest: &str) -> String {
             positional.push(tok);
         }
     }
-    // Map positional args to the sox order: DURATION, TYPE, FREQ.
+    // Map positional args to the traditional terse-CLI order:
+    // DURATION, TYPE, FREQ.
     if let Some(d) = positional.first() {
         if !d.is_empty() {
             parts.push(format!("duration={}", encode(d)));
