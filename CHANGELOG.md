@@ -6,6 +6,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/OxideAV/oxideav-generator/compare/v0.1.4...v0.1.5) - 2026-06-01
+
+### Other
+
+- round 12: synth `supersaw` — detuned-sawtooth stack
+
 ### Added
 
 - Audio synth gained `supersaw` (alias `saws`) — a detuned-sawtooth
