@@ -42,7 +42,10 @@
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,
 //!   checkerboard / horizontal / vertical / diagonal patterns.
 //! - **Procedural images** — Mandelbrot + Julia fractals, plasma
-//!   (recursive midpoint displacement), Perlin noise.
+//!   (recursive midpoint displacement), Perlin + simplex gradient
+//!   noise, Worley cellular noise (`type=worley`, alias `cellular`;
+//!   `dist=euclidean|manhattan|chebyshev`, `k ∈ [1, 4]`,
+//!   `points ∈ [1, 4]` feature-points per cell).
 //! - **Video** — `testsrc` (animated timestamp + colour bars + circle —
 //!   the classical broadcast-engineering test signal), `smptebars`
 //!   (SMPTE 75% colour bars), `fractal_zoom` (animated Mandelbrot zoom),

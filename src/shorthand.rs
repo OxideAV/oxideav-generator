@@ -301,6 +301,15 @@ mod tests {
     }
 
     #[test]
+    fn noise_worley_and_cellular() {
+        assert_eq!(translate("noise:worley"), "generate://noise?type=worley");
+        assert_eq!(
+            translate("noise:cellular"),
+            "generate://noise?type=cellular"
+        );
+    }
+
+    #[test]
     fn label_simple_text() {
         assert_eq!(
             translate("label:Hello world"),

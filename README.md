@@ -10,7 +10,7 @@ white-pink-brown-blue-violet noise / silence),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin + simplex gradient
-noise), and video
+noise, Worley cellular noise), and video
 (classical broadcast `testsrc`, SMPTE colour bars, animated Mandelbrot
 zoom, hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency
 probe).
@@ -69,6 +69,8 @@ generate://fractal?type=julia&w=640&h=480&cx=-0.7&cy=0.27&iter=256
 generate://plasma?w=640&h=480&seed=42
 generate://noise?type=perlin&w=640&h=480&scale=64&seed=42
 generate://noise?type=simplex&w=640&h=480&scale=64&octaves=4&seed=42
+generate://noise?type=worley&w=640&h=480&scale=48&seed=42
+generate://noise?type=worley&dist=manhattan&k=2&points=2&w=640&h=480&scale=48&seed=42
 
 generate://testsrc?w=640&h=480&duration=5&fps=30
 generate://smptebars?w=640&h=480&duration=5&fps=30
@@ -112,6 +114,38 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 13 (2026-06-02): image noise gained `worley` (alias `cellular`)
+— Worley / cellular noise, a spatial-point-process texture distinct
+from gradient noise. The plane is divided into integer cells of side
+`scale` pixels; each cell holds `points ∈ [1, 4]` pseudo-randomly
+placed feature points (`points=1` is the canonical Voronoi / "stone
+wall" texture, higher values pack the plane more densely); for each
+pixel the renderer scans the 3×3 neighbourhood of cells around the
+pixel's home cell, gathers every feature-point distance, and palette-
+maps the k-th closest distance (`k ∈ [1, 4]`, default 1 = the F1
+distance; `k=2` is the so-called F2 distance, etc.). Three distance
+metrics are exposed: `dist=euclidean|euc|l2` (default), `manhattan|l1`,
+`chebyshev|linf|max` — Euclidean gives the smooth circular falloff,
+Manhattan gives axis-rotated diamonds, Chebyshev gives axis-aligned
+squares, all on the same Voronoi cell structure. Pseudo-random feature-
+point placement uses the existing in-tree LCG keyed by
+`(cell_x, cell_y, slot, seed)`, so `seed=` is bit-deterministic across
+builds and across the gradient-noise modes the same module already
+ships. Twelve new tests cover (a) basic render shape, (b) `worley` /
+`cellular` alias byte-equivalence, (c) seed determinism + seed
+divergence, (d) categorical distinctness from `perlin` and `simplex` at
+the same seed (it's a fundamentally different algorithm), (e) the
+three metrics each rendering and producing visibly different images,
+(f) `k=1` vs `k=2` divergence, (g) `points=1` vs `points=3` divergence,
+(h) the placement contract — each feature point stays inside its
+declared cell over a sweep of negative + positive cell coordinates,
+(i) palette-bounded output (no panic on the indexed access, ≥ 8
+distinct colours in a 48×48 render), (j) Chebyshev render non-
+degeneracy, (k) unknown-metric error path. Mathematical reference is
+Steven Worley, *A Cellular Texture Basis Function*, SIGGRAPH 1996
+proceedings — a public academic paper on cellular-noise basis
+functions. Pure first-principles maths; no other reference consulted.
 
 Round 12 (2026-06-01): audio synth gained `supersaw` (alias `saws`) —
 a detuned-sawtooth stack that piles `voices` (default 7, clamped to

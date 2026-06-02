@@ -8,6 +8,35 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Image noise gained `worley` (alias `cellular`) — Worley / cellular
+  noise, a spatial-point-process texture distinct from the existing
+  Perlin / simplex gradient-noise modes. The plane is divided into
+  integer cells of side `scale` pixels; each cell holds `points ∈ [1, 4]`
+  pseudo-randomly placed feature points (`points=1` is the canonical
+  Voronoi / "stone wall" texture); each pixel scans the 3×3
+  neighbourhood of cells around its home cell, gathers every feature-
+  point distance, and palette-maps the k-th closest distance (`k ∈
+  [1, 4]`, default 1 — the F1 distance; `k=2` is the F2 distance). The
+  distance metric is selectable via `dist=euclidean|euc|l2` (default),
+  `manhattan|l1`, `chebyshev|linf|max` — same Voronoi cell structure,
+  three different falloff shapes (circle, diamond, square). Pseudo-
+  random feature-point placement uses the same in-tree LCG the rest of
+  the module already uses, keyed by `(cell_x, cell_y, slot, seed)`, so
+  the same `seed=` is bit-deterministic across builds and the same
+  seed semantics already documented for `perlin` / `simplex` apply
+  here. Twelve new tests cover the alias byte-equivalence
+  (`worley` ≡ `cellular`), seed determinism, seed divergence,
+  categorical distinctness from both gradient-noise modes at the same
+  seed, the three-metric render-and-differ matrix, k=1 vs k=2
+  divergence, points=1 vs points=3 divergence, the
+  feature-point-inside-cell placement contract over a sweep of negative
+  + positive cell coordinates, palette-bounded output (no panic on the
+  indexed access; ≥ 8 distinct colours in a 48×48 render), and the
+  unknown-metric error path. Mathematical reference is Steven Worley,
+  *A Cellular Texture Basis Function*, SIGGRAPH 1996 proceedings — a
+  public academic paper on cellular-noise basis functions. Pure
+  first-principles maths.
+
 - Audio synth gained `supersaw` (alias `saws`) — a detuned-sawtooth
   stack that piles `voices` sawtooth oscillators around a centre
   frequency `freq` Hz and equal-weight averages them. `voices` defaults
