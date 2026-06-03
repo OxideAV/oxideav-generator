@@ -36,7 +36,10 @@
 //! - **Audio** — sine / square / triangle / sawtooth / supersaw
 //!   (detuned-sawtooth stack) / pwm (pulse-width modulated rectangular
 //!   wave) / pluck (Karplus-Strong) / chirp (linear or exponential
-//!   sweep) / fm (frequency modulation) / dtmf (telephone touch-tones) /
+//!   sweep) / fm (frequency modulation) / am (sinusoidal amplitude
+//!   modulation) / tremolo (sub-audio unipolar-cosine envelope on any
+//!   carrier) / ringmod (carrier-suppressed product of two sines) /
+//!   dtmf (telephone touch-tones) /
 //!   formant (Klatt-style two-formant vowel synthesizer) / multitone
 //!   (sum of sines) / white-pink-brown-blue-violet noise / silence.
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,

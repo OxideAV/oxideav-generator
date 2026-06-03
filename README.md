@@ -4,6 +4,7 @@ Pure-Rust synthetic media generator for the oxideav framework. Provides
 audio synth (sine / square / triangle / sawtooth / supersaw
 (detuned-sawtooth stack) / pulse-width-modulated rectangle /
 Karplus-Strong pluck / linear + exponential chirp / FM / AM /
+sub-audio tremolo (unipolar-cosine LFO over any carrier) /
 ring modulation / DTMF touch-tones / ADSR-enveloped tone / Klatt-style
 two-formant vowel synthesizer / multi-tone /
 white-pink-brown-blue-violet noise / silence),
@@ -50,6 +51,7 @@ generate://synth?type=chirp&shape=linear&f0=200&f1=4000&duration=4
 generate://synth?type=chirp&shape=exp&f0=20&f1=20000&duration=4
 generate://synth?type=fm&carrier=440&modulator=110&index=5&duration=2
 generate://synth?type=am&carrier=440&modulator=60&index=0.5&duration=2
+generate://synth?type=tremolo&wave=sine&freq=440&lfo=5&depth=0.7&duration=2
 generate://synth?type=ringmod&f1=440&f2=60&duration=2
 generate://synth?type=dtmf&digits=0123456789&tone=0.1&gap=0.05
 generate://synth?type=adsr&wave=sine&freq=440&attack=0.02&decay=0.1&sustain=0.7&release=0.2&duration=2

@@ -8,6 +8,54 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained `tremolo` (alias `trem`) — a sub-audio amplitude
+  envelope laid over an arbitrary carrier wave. The carrier is selected
+  via `wave=sine|square|triangle|sawtooth` (mirroring the `adsr`
+  carrier list); each sample is then scaled by the unipolar cosine
+  envelope `e(t) = 1 − depth · 0.5 · (1 − cos(2π · lfo · t))`, which
+  sits exactly in `[1 − depth, 1] ⊆ [0, 1]` so the output is bounded
+  by `amplitude` for every `(wave, freq, lfo, depth)`. Defaults are
+  `wave=sine`, `freq=440`, `lfo=5`, `depth=0.5` — five-cycles-per-
+  second amplitude swell, the classical guitar-amp / Leslie tremolo
+  speed. Distinct from the existing `am`: tremolo's envelope is
+  unipolar (strict attenuation, never crosses zero) and runs at sub-
+  audio LFO rates (0–20 Hz typical), while `am` uses a bipolar
+  audio-rate sinusoidal modulator with prosthaphaeresis sidebands at
+  `fc ± fm` and the leading 0.5 normalisation; tremolo's spectrum
+  stays centred on `fc` with low-frequency sidebands at `fc ± lfo`
+  that read perceptually as periodic loudness variation rather than
+  a new timbre, and the carrier can be any of the four in-tree
+  oscillators rather than just a sine. Eleven new tests cover (a) the
+  `depth=0` collapse to the pure carrier sample-for-sample, (b) the
+  amplitude bound on a non-trivial 44.1 kHz × 4096-sample square-
+  carrier render (square is the worst case because every sample
+  already sits at the rail), (c) the envelope-range identity that
+  positive samples span exactly `[amp·(1 − d), amp]` over an integer
+  number of LFO periods, (d) RMS-energy quartile divergence between
+  the LFO peak and trough (proves the LFO is actually steering the
+  gain), (e) the `lfo=0` algebraic collapse to the pure carrier (the
+  cosine freezes at 1, leaving the envelope identically 1), (f)
+  categorical divergence from `am` at matched depth (different
+  spectrum — same headline parameter), (g) `type=tremolo` / `type=trem`
+  alias byte-equivalence with default-bounded output, (h) dispatcher
+  depth-clamp to [0, 1] (out-of-range value matches the explicit-
+  clamped render bit-for-bit), (i) the unknown-wave error path
+  surfaces both `tremolo` and the offending wave name, (j) the
+  catalogue listing tremolo in the "unknown type" help, and (k)
+  carrier-shape parity — each of `sine` / `square` / `triangle` /
+  `sawtooth` (with `saw` aliasing `sawtooth`) produces a
+  distinguishable buffer at the same LFO config, so the wave selector
+  is honoured end-to-end. Pure first-principles DSP; mathematical
+  reference is the standard amplitude-modulation result that a non-
+  negative low-frequency envelope on a band-limited carrier shifts
+  spectral energy by ±lfo without injecting an AM-style suppressed-
+  carrier component (textbook material in Moore, *Elements of
+  Computer Music*, 1990, chapter 4 on classic analogue effects).
+  Reaches the URI path (`generate://synth?type=tremolo&…`), the
+  `synth:` shorthand via the existing comma-arg parser, and the
+  `audio.synth` filter through the existing dispatcher (no new
+  registration).
+
 - Image noise gained `value` (alias `lattice`) — classical value noise,
   the textbook predecessor to gradient noise that Ken Perlin's 1985
   SIGGRAPH paper *An Image Synthesizer* introduced before moving on to

@@ -209,6 +209,31 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
                 amplitude,
             )
         }
+        "tremolo" | "trem" => {
+            // Sub-audio amplitude envelope on top of an arbitrary
+            // carrier wave. Distinguishing features vs `am`:
+            //   * The LFO is unipolar (cosine, never crosses zero in
+            //     the envelope), so it is strictly amplitude
+            //     attenuation — no sidebands at fc ± fm in the
+            //     amplitude-modulation sense; the envelope acts as a
+            //     time-varying scalar on the carrier.
+            //   * The LFO frequency lives in the sub-audio band
+            //     (default 5 Hz, classical "tremolo speed"), well
+            //     below the carrier — what AM stops being and
+            //     tremolo starts being is a frequency-domain
+            //     distinction more than a topological one.
+            //   * The carrier can be any in-tree waveform
+            //     (`wave=sine|square|triangle|sawtooth`), not just
+            //     a sine.
+            //   * The envelope is `1 − depth · 0.5 · (1 − cos(2π·f·t))`,
+            //     which ranges exactly over `[1 − depth, 1]`, so the
+            //     amplitude bound `|out| ≤ amplitude` is guaranteed.
+            let wave = q_str(query, "wave", "sine");
+            let freq = q_f64(query, "freq", 440.0)? as f32;
+            let lfo = q_f64(query, "lfo", 5.0)? as f32;
+            let depth = q_f64(query, "depth", 0.5)?.clamp(0.0, 1.0) as f32;
+            tremolo(wave, freq, lfo, depth, sample_rate, frame_count, amplitude)?
+        }
         "dtmf" => {
             // Touch-tone keypad: each key is the sum of one low-group and
             // one high-group sine (ITU-T Q.23 / Q.24 DTMF layout).
@@ -292,7 +317,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|tremolo|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
             )));
         }
     };
@@ -705,6 +730,78 @@ pub fn am(
             half * envelope * (TAU * carrier * t).sin()
         })
         .collect()
+}
+
+/// Sub-audio amplitude envelope on an arbitrary carrier wave —
+/// classical "tremolo" effect.
+///
+/// The carrier is rendered in full first via the in-tree oscillator
+/// selected by `wave` (`sine` / `square` / `triangle` / `sawtooth`
+/// or `saw`); each sample is then scaled by a unipolar cosine LFO
+///
+/// ```text
+/// e(t) = 1 − depth · 0.5 · (1 − cos(2π · f_lfo · t))
+/// ```
+///
+/// which ranges exactly over `[1 − depth, 1]` (the half-shifted cosine
+/// `0.5 · (1 − cos x)` sits in `[0, 1]`, and `depth ∈ [0, 1]`). Output
+/// is therefore in `[−amplitude, amplitude]` for every input. At
+/// `depth = 0` the envelope collapses to `1` and the function returns
+/// the pure carrier; at `depth = 1` the envelope sweeps all the way
+/// down to zero once per LFO period, the deepest possible tremolo.
+///
+/// Tremolo is *not* a thin alias for [`am`]. Three distinguishing
+/// properties:
+///
+/// 1. The envelope is unipolar (non-negative), so the effect is strict
+///    amplitude attenuation rather than a bipolar mix that injects
+///    sidebands at `fc ± fm` in the AM sense.
+/// 2. `f_lfo` is sub-audio (default 5 Hz, classical guitar-amp
+///    "tremolo speed"), well below the carrier — the spectrum stays
+///    centred on `fc` with low-frequency sidebands that perceptually
+///    register as periodic loudness variation rather than a new
+///    timbre.
+/// 3. The carrier can be any of the in-tree band-limited oscillators,
+///    not just a sine.
+///
+/// Returns `Err` on the same conditions as [`adsr`]: unknown `wave`.
+pub fn tremolo(
+    wave: &str,
+    freq: f32,
+    lfo_hz: f32,
+    depth: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Result<Vec<f32>> {
+    let base = match wave {
+        "sine" => sine(freq, sample_rate, n, amplitude),
+        "square" => square(freq, sample_rate, n, amplitude),
+        "triangle" => triangle(freq, sample_rate, n, amplitude),
+        "sawtooth" | "saw" => sawtooth(freq, sample_rate, n, amplitude),
+        other => {
+            return Err(Error::invalid(format!(
+                "synth: tremolo wave {other:?} (expected sine|square|triangle|sawtooth)"
+            )));
+        }
+    };
+    let d = depth.clamp(0.0, 1.0);
+    let dt = 1.0 / sample_rate as f32;
+    let half_d = 0.5 * d;
+    let out = base
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            let t = i as f32 * dt;
+            // e(t) = 1 − d · 0.5 · (1 − cos(2π · f_lfo · t))
+            //       = (1 − d) + d · 0.5 · (1 + cos(2π · f_lfo · t))
+            // Either form lands in [1 − d, 1]; the latter is one fewer
+            // sign flip.
+            let env = (1.0 - d) + half_d * (1.0 + (TAU * lfo_hz * t).cos());
+            s * env
+        })
+        .collect();
+    Ok(out)
 }
 
 /// Equal-weight sum of sine tones, scaled so the worst-case peak (all
@@ -2454,5 +2551,238 @@ mod tests {
             middle.abs() < 1e-6,
             "expected centre voice at 0 cents, got {middle}"
         );
+    }
+
+    // ───── tremolo ─────
+
+    #[test]
+    fn tremolo_depth_zero_is_pure_carrier() {
+        // depth=0 → envelope ≡ 1 → output must be sample-for-sample
+        // identical to the underlying carrier. This proves the
+        // generaliser-not-replacement property: tremolo at depth 0 is
+        // the carrier untouched.
+        let n = 2048;
+        let sr = 8000;
+        let freq = 440.0_f32;
+        let amp = 0.8_f32;
+        let got = tremolo("sine", freq, 5.0, 0.0, sr, n, amp).unwrap();
+        let want = sine(freq, sr, n, amp);
+        let max_err = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_err < 1e-7, "max err at depth=0: {max_err}");
+    }
+
+    #[test]
+    fn tremolo_envelope_bounded_by_amplitude() {
+        // The envelope sits in [1 − depth, 1] ⊆ [0, 1] for every
+        // (freq, lfo, depth) and every sample rate; therefore the
+        // output is bounded by `amplitude`. Verify on a non-trivial
+        // (high-depth, fast-LFO) configuration with a square carrier
+        // — square is the worst case for the bound because its
+        // samples already sit at the amplitude rail.
+        let amp = 0.8_f32;
+        let buf = tremolo("square", 220.0, 7.0, 0.9, 44100, 4096, amp).unwrap();
+        for (i, s) in buf.iter().enumerate() {
+            assert!(
+                s.abs() <= amp + 1e-6,
+                "tremolo sample {i} = {s} exceeded amp {amp}"
+            );
+        }
+    }
+
+    #[test]
+    fn tremolo_envelope_range_matches_one_minus_depth_to_one() {
+        // For a constant-amplitude carrier (square at +amp) the
+        // tremolo output trace is exactly the envelope scaled by
+        // +amp. Over an integer number of LFO periods the envelope
+        // covers [1 − d, 1] inclusive, so the extracted +amp samples
+        // should span [amp · (1 − d), amp].
+        let sr = 10_000;
+        let lfo = 5.0_f32;
+        // 4 full LFO periods at 10 kHz → 8000 samples.
+        let n = (sr as f32 * 4.0 / lfo) as usize;
+        let d = 0.6_f32;
+        let amp = 1.0_f32;
+        let buf = tremolo("square", 1000.0, lfo, d, sr, n, amp).unwrap();
+        // square outputs ±amp; the envelope rescales the +amp samples
+        // to env·amp; we look at the positive half-period samples.
+        let pos: Vec<f32> = buf.iter().copied().filter(|&v| v > 0.0).collect();
+        let pmin = pos.iter().copied().fold(f32::INFINITY, f32::min);
+        let pmax = pos.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        // The envelope minimum (= 1 − d) at the LFO peak attenuation
+        // should be reached at least one positive-square sample per
+        // LFO period; allow a small floating slack.
+        assert!(
+            (pmin - amp * (1.0 - d)).abs() < 0.02,
+            "expected positive samples to dip to {} (= amp·(1 − d)); got pmin={pmin}",
+            amp * (1.0 - d)
+        );
+        assert!(
+            (pmax - amp).abs() < 0.02,
+            "expected positive samples to peak at +amp={amp}; got pmax={pmax}"
+        );
+    }
+
+    #[test]
+    fn tremolo_modulates_envelope_over_time() {
+        // With a slow LFO and a meaningful depth, the RMS energy in
+        // the first quarter of the buffer (envelope swelling up to 1
+        // around t = 0 because cos(0) = 1) should exceed the RMS
+        // around the LFO's half-period (where cos = −1 and the
+        // envelope reaches 1 − depth). Static depth=0 could never
+        // produce a quarter-to-quarter difference, so this is the
+        // canonical "the LFO is actually steering the gain" probe.
+        let sr = 8000;
+        // 1 s buffer at 8 kHz; 1 Hz LFO over 1 s = one full LFO period.
+        let n = 8000;
+        let buf = tremolo("sine", 440.0, 1.0, 0.8, sr, n, 1.0).unwrap();
+        let rms = |slice: &[f32]| -> f32 {
+            let sum: f32 = slice.iter().map(|v| v * v).sum();
+            (sum / slice.len() as f32).sqrt()
+        };
+        // Around t = 0..1/8 s (LFO phase 0..π/4) envelope ≈ 1.
+        let r0 = rms(&buf[..n / 8]);
+        // Around t = 3/8..5/8 s (LFO phase 3π/4..5π/4) cos ≈ −1 ⇒
+        // envelope minimum.
+        let r_mid = rms(&buf[(3 * n / 8)..(5 * n / 8)]);
+        assert!(
+            r0 > r_mid * 1.5,
+            "expected LFO peak RMS {r0} to dominate LFO trough RMS {r_mid}"
+        );
+    }
+
+    #[test]
+    fn tremolo_lfo_zero_is_constant_attenuation_one() {
+        // lfo_hz=0 freezes cos(2π·0·t) ≡ 1 ⇒ envelope ≡ 1 regardless
+        // of depth — algebraically the envelope reduces to
+        //   (1 − d) + d · 0.5 · (1 + 1) = (1 − d) + d = 1.
+        // So lfo=0 is the documented "no modulation" escape hatch
+        // even at non-zero depth. Verify against the carrier sample
+        // for sample.
+        let n = 1024;
+        let sr = 8000;
+        let got = tremolo("sine", 440.0, 0.0, 0.5, sr, n, 0.8).unwrap();
+        let want = sine(440.0, sr, n, 0.8);
+        let max_err = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_err < 1e-7, "lfo=0 should be the pure carrier");
+    }
+
+    #[test]
+    fn tremolo_distinguishes_from_am() {
+        // Tremolo and AM share the "amplitude is modulated" headline
+        // but differ in everything that matters at the spectrum:
+        // tremolo's envelope is unipolar and sub-audio; the in-tree
+        // `am` operates with a bipolar sine modulator at audio
+        // rate. Confirm the buffers actually differ for a
+        // representative configuration (5 Hz tremolo vs 60 Hz AM
+        // modulator).
+        let sr = 8000;
+        let n = 4000; // 0.5 s — enough for several LFO + AM cycles.
+        let trem = tremolo("sine", 440.0, 5.0, 0.5, sr, n, 0.8).unwrap();
+        // `am` clamps its index to [0, 1] and uses 0.5 normalisation;
+        // we drive it at the same depth (0.5) so the *amplitude*
+        // intent matches even though the maths is different.
+        let am_buf = am(440.0, 60.0, 0.5, sr, n, 0.8);
+        let mut max_diff = 0.0_f32;
+        for (a, b) in trem.iter().zip(&am_buf) {
+            max_diff = max_diff.max((a - b).abs());
+        }
+        assert!(
+            max_diff > 0.1,
+            "tremolo and am should diverge substantially: max_diff={max_diff}"
+        );
+    }
+
+    #[test]
+    fn tremolo_dispatcher_alias_and_default_bounds() {
+        // `type=trem` is the documented short alias; both names must
+        // produce identical buffers. Defaults: wave=sine, freq=440,
+        // lfo=5, depth=0.5 → bounded output (envelope ∈ [0.5, 1]).
+        let a = render(&map(&[("type", "tremolo"), ("duration", "0.05")])).unwrap();
+        let b = render(&map(&[("type", "trem"), ("duration", "0.05")])).unwrap();
+        assert_eq!(a.samples, b.samples);
+        assert_eq!(a.samples.len(), 400); // 8000 × 0.05.
+        for s in &a.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn tremolo_dispatcher_clamps_depth() {
+        // depth=2 is out of [0, 1] and clamps to 1.0 at the
+        // dispatcher; verify by comparing to an explicit depth=1
+        // render. The two buffers should agree to f32 quantisation.
+        let clamped = render(&map(&[
+            ("type", "tremolo"),
+            ("duration", "0.05"),
+            ("depth", "2"),
+        ]))
+        .unwrap();
+        let explicit = render(&map(&[
+            ("type", "tremolo"),
+            ("duration", "0.05"),
+            ("depth", "1"),
+        ]))
+        .unwrap();
+        assert_eq!(clamped.samples.len(), explicit.samples.len());
+        for (i, (&a, &b)) in clamped.samples.iter().zip(&explicit.samples).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-7,
+                "sample {i}: clamped {a}, explicit {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn tremolo_unknown_wave_errors() {
+        // The wave selector mirrors `adsr`'s carrier list. An invalid
+        // value must surface a clear error mentioning `tremolo`.
+        let err = render(&map(&[
+            ("type", "tremolo"),
+            ("wave", "ocarina"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("tremolo"), "missing 'tremolo' in {msg}");
+        assert!(msg.contains("ocarina"), "missing offending wave in {msg}");
+    }
+
+    #[test]
+    fn tremolo_listed_in_unknown_type_help() {
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        assert!(format!("{err}").contains("tremolo"));
+    }
+
+    #[test]
+    fn tremolo_carrier_wave_selectable() {
+        // All four carrier waves must accept the tremolo wrapper and
+        // produce distinguishable output (carrier-shape parity is the
+        // distinguishing property versus the sine-only `am`).
+        let sr = 8000;
+        let n = 1024;
+        let amp = 0.8_f32;
+        let s = tremolo("sine", 220.0, 5.0, 0.5, sr, n, amp).unwrap();
+        let q = tremolo("square", 220.0, 5.0, 0.5, sr, n, amp).unwrap();
+        let t = tremolo("triangle", 220.0, 5.0, 0.5, sr, n, amp).unwrap();
+        let w = tremolo("sawtooth", 220.0, 5.0, 0.5, sr, n, amp).unwrap();
+        let saw_alias = tremolo("saw", 220.0, 5.0, 0.5, sr, n, amp).unwrap();
+        assert_eq!(w, saw_alias, "`saw` alias must match `sawtooth`");
+        let differ = |a: &[f32], b: &[f32]| {
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(differ(&s, &q) > 0.1, "sine vs square must diverge");
+        assert!(differ(&q, &t) > 0.1, "square vs triangle must diverge");
+        assert!(differ(&t, &w) > 0.05, "triangle vs sawtooth must diverge");
     }
 }
