@@ -8,6 +8,44 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Image noise gained `value` (alias `lattice`) — classical value noise,
+  the textbook predecessor to gradient noise that Ken Perlin's 1985
+  SIGGRAPH paper *An Image Synthesizer* introduced before moving on to
+  gradient noise. Each integer lattice point holds a pseudo-random
+  scalar in `[-1, 1]`; a sample at `(x, y)` smoothstep-interpolates
+  the four surrounding lattice values. The lattice values come from
+  the existing seeded 512-entry permutation table (`build_perm`) —
+  `perm[(perm[ix & 0xFF] + iy) & 0xFF]` is a `u8` deterministically
+  hashed from `(ix, iy, seed)`, then remapped from `[0, 255]` to
+  `[-1, 1]` via `(h · 2 / 255) − 1`. The smoothstep is the same quintic
+  `t³·(t·(6t − 15) + 10)` `fade` curve `perlin2` uses, so the surface
+  is C²-continuous across every lattice boundary. Output is bounded by
+  `[-1, 1]` exactly because both the corner values and the
+  interpolation weights are bounded that way (a convex combination of
+  values in `[-1, 1]` stays in `[-1, 1]`), which matches
+  `perlin2` / `simplex2` so the shared multi-octave fBm accumulator,
+  palette mapping, `scale=` / `octaves=` / `seed=` parameters all work
+  unchanged — `value` is the third basis on the same accumulator
+  alongside `perlin` and `simplex`. Distinct from gradient noise:
+  value noise has axis-aligned blocky low-frequency character because
+  the lattice scalars (not gradients of a hidden field) carry the
+  signal, which is exactly why Perlin moved on from it. Ten new tests
+  cover basic render shape, `value` / `lattice` alias byte-
+  equivalence, seed determinism + seed divergence, categorical
+  distinctness from `perlin` and `simplex` at the same seed/scale
+  (different algorithm), distinctness from `worley` too (third
+  independent basis), the raw-sample `[-1, 1]` boundedness invariant
+  over a 200×200 grid plus a non-degeneracy `|v| > 0.3` floor,
+  integer-lattice corner identity (`value2(perm, 3.0, 5.0)` must equal
+  the corner's own remapped scalar because `fade(0) = 0` zeros the
+  neighbour contributions), palette-bounded output (≥ 8 distinct
+  colours in a 48×48 render), and the unknown-type error message now
+  advertising `value`. Pure first-principles maths; reference is
+  Perlin's 1985 SIGGRAPH paper. Reaches the URI path
+  (`generate://noise?type=value&…`), the `noise:value` shorthand (via
+  the existing `noise:<type>` prefix), and the `image.noise` filter
+  through the existing dispatcher (no new registration).
+
 - Image noise gained `worley` (alias `cellular`) — Worley / cellular
   noise, a spatial-point-process texture distinct from the existing
   Perlin / simplex gradient-noise modes. The plane is divided into

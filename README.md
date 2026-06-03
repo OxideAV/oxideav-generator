@@ -10,7 +10,7 @@ white-pink-brown-blue-violet noise / silence),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin + simplex gradient
-noise, Worley cellular noise), and video
+noise, value / lattice noise, Worley cellular noise), and video
 (classical broadcast `testsrc`, SMPTE colour bars, animated Mandelbrot
 zoom, hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency
 probe).
@@ -69,6 +69,7 @@ generate://fractal?type=julia&w=640&h=480&cx=-0.7&cy=0.27&iter=256
 generate://plasma?w=640&h=480&seed=42
 generate://noise?type=perlin&w=640&h=480&scale=64&seed=42
 generate://noise?type=simplex&w=640&h=480&scale=64&octaves=4&seed=42
+generate://noise?type=value&w=640&h=480&scale=64&octaves=4&seed=42
 generate://noise?type=worley&w=640&h=480&scale=48&seed=42
 generate://noise?type=worley&dist=manhattan&k=2&points=2&w=640&h=480&scale=48&seed=42
 
@@ -114,6 +115,45 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 14 (2026-06-03): image noise gained `value` (alias `lattice`) —
+classical value noise, the textbook predecessor to gradient noise that
+Ken Perlin's 1985 SIGGRAPH paper *An Image Synthesizer* introduced
+before moving on to gradient noise. Each integer lattice point holds a
+pseudo-random scalar in `[-1, 1]`; a sample at `(x, y)` smoothstep-
+interpolates the four surrounding lattice values. The lattice values
+themselves come from the existing seeded 512-entry permutation table
+(`build_perm`) — `perm[(perm[ix & 0xFF] + iy) & 0xFF]` is a `u8`
+hashed deterministically from `(ix, iy, seed)`, then remapped from
+`[0, 255]` to `[-1, 1]` via `(h · 2 / 255) − 1`. The smoothstep is the
+exact same quintic `t³·(t·(6t − 15) + 10)` `fade` curve `perlin2`
+uses, so the surface is C²-continuous across every lattice boundary.
+Output is bounded by `[-1, 1]` exactly because both the corner values
+and the interpolation weights are bounded that way (a convex
+combination of values in `[-1, 1]` stays in `[-1, 1]`), which matches
+`perlin2` / `simplex2` so the shared multi-octave fBm accumulator,
+palette mapping, `scale=` / `octaves=` / `seed=` parameters all work
+unchanged — `value` is the third basis on the same accumulator
+alongside `perlin` and `simplex`. Distinct from gradient noise:
+value noise has axis-aligned blocky low-frequency character because
+the lattice scalars (not gradients of a hidden field) carry the
+signal, which is exactly why Perlin moved on from it. Ten new tests
+cover (a) basic render shape, (b) `value` / `lattice` alias byte-
+equivalence, (c) seed determinism + seed divergence, (d) categorical
+distinctness from `perlin` and `simplex` at the same seed/scale
+(different algorithm), (e) distinctness from `worley` too (third
+independent basis), (f) the raw-sample `[-1, 1]` boundedness invariant
+over a 200×200 grid plus a non-degeneracy `|v| > 0.3` floor,
+(g) integer-lattice corner identity — `value2(perm, 3.0, 5.0)` must
+equal the corner's own remapped scalar because `fade(0) = 0` zeros
+the neighbour contributions, (h) palette-bounded output (≥ 8 distinct
+colours in a 48×48 render), (i) the unknown-type error message now
+advertising `value`. Pure first-principles maths; reference is
+Perlin's 1985 SIGGRAPH paper, an already-cited public academic source
+for this module. Reaches the URI path
+(`generate://noise?type=value&…`), the `noise:value` shorthand (via
+the existing `noise:<type>` prefix), and the `image.noise` filter
+through the existing dispatcher (no new registration).
 
 Round 13 (2026-06-02): image noise gained `worley` (alias `cellular`)
 — Worley / cellular noise, a spatial-point-process texture distinct
@@ -371,6 +411,7 @@ plus `#RGB`, `#RGBA`, `#RRGGBB`, and `#RRGGBBAA`.
 
 All randomness is seeded — every generator that takes a `seed=` query
 parameter is bit-deterministic across builds. Defaults: `seed=42` for
-plasma / Perlin / simplex, `seed=0x12345678` for white / pink / brown
-noise. Perlin and simplex draw from the same seeded 512-entry
-permutation table, so a given `seed=` is reproducible for both kinds.
+plasma / Perlin / simplex / value, `seed=0x12345678` for white / pink
+/ brown noise. Perlin, simplex, and value all draw from the same
+seeded 512-entry permutation table, so a given `seed=` is reproducible
+across all three gradient / lattice modes.

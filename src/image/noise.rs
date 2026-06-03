@@ -9,6 +9,21 @@
 //!   they share the multi-octave fBm accumulator and the palette
 //!   mapping in [`render`].
 //!
+//! - **Value noise** — `type=value` (alias `type=lattice`). The
+//!   textbook predecessor to gradient noise: each integer lattice
+//!   point holds a pseudo-random scalar in `[-1, 1]`; a sample at
+//!   `(x, y)` smoothstep-interpolates the four surrounding lattice
+//!   values. The smoothstep is the same quintic
+//!   `t³·(t·(6t − 15) + 10)` `fade` curve [`perlin2`] uses, so the
+//!   surface is C²-continuous along cell boundaries. Distinct from
+//!   gradient noise: value noise has axis-aligned blocky low-frequency
+//!   character because the lattice values themselves (not gradients of
+//!   a hidden field) carry the signal, which is exactly why Perlin's
+//!   1985 SIGGRAPH paper *An Image Synthesizer* moved on from it to
+//!   gradient noise. Same seeded permutation table as the gradient
+//!   modes (`build_perm`); same multi-octave fBm accumulator; same
+//!   palette. Pure first-principles maths.
+//!
 //! - **Cellular noise** — Worley 2-D (`type=worley`, alias
 //!   `type=cellular`). A spatial-point-process noise distinct from
 //!   gradient noise: feature points are placed pseudo-randomly inside
@@ -41,9 +56,12 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
     let octaves = q_u32(query, "octaves", 4)?.clamp(1, 8);
     let seed = q_u32(query, "seed", 42)?;
 
-    if !matches!(kind, "perlin" | "simplex" | "worley" | "cellular") {
+    if !matches!(
+        kind,
+        "perlin" | "simplex" | "worley" | "cellular" | "value" | "lattice"
+    ) {
         return Err(Error::invalid(format!(
-            "noise: unknown type {kind:?} (expected perlin|simplex|worley|cellular)"
+            "noise: unknown type {kind:?} (expected perlin|simplex|value|worley|cellular)"
         )));
     }
 
@@ -51,24 +69,32 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
         return render_worley(query, w, h, scale, seed);
     }
 
-    let simplex = kind == "simplex";
+    // `kind` is now one of perlin / simplex / value / lattice. The three
+    // share the same multi-octave fBm accumulator, the same seeded
+    // permutation table, and the same palette mapping — only the per-
+    // octave point sample differs.
+    let mode = match kind {
+        "simplex" => NoiseMode::Simplex,
+        "value" | "lattice" => NoiseMode::Value,
+        _ => NoiseMode::Perlin,
+    };
 
     let perm = build_perm(seed);
     let palette = default_palette();
     let mut img = Rgba8Image::new(w, h);
     for y in 0..h {
         for x in 0..w {
-            // Multi-octave fBm — same accumulator for both kinds; only
-            // the per-octave gradient-noise sample differs.
+            // Multi-octave fBm — same accumulator for all three kinds;
+            // only the per-octave noise sample differs.
             let mut amp = 1.0f32;
             let mut freq = 1.0f32 / (scale as f32);
             let mut total = 0.0f32;
             let mut max_total = 0.0f32;
             for _ in 0..octaves {
-                let sample = if simplex {
-                    simplex2(&perm, (x as f32) * freq, (y as f32) * freq)
-                } else {
-                    perlin2(&perm, (x as f32) * freq, (y as f32) * freq)
+                let sample = match mode {
+                    NoiseMode::Perlin => perlin2(&perm, (x as f32) * freq, (y as f32) * freq),
+                    NoiseMode::Simplex => simplex2(&perm, (x as f32) * freq, (y as f32) * freq),
+                    NoiseMode::Value => value2(&perm, (x as f32) * freq, (y as f32) * freq),
                 };
                 total += amp * sample;
                 max_total += amp;
@@ -81,6 +107,13 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
         }
     }
     Ok(img)
+}
+
+#[derive(Copy, Clone)]
+enum NoiseMode {
+    Perlin,
+    Simplex,
+    Value,
 }
 
 /// Worley / cellular noise dispatcher.
@@ -291,6 +324,45 @@ fn simplex2(perm: &[u8; 512], x: f32, y: f32) -> f32 {
 
     // Scale to span ≈ [-1, 1].
     70.0 * (n0 + n1 + n2)
+}
+
+/// Classical value 2-D noise — the textbook predecessor to gradient
+/// noise. At every integer lattice point `(ix, iy)` we read a
+/// pseudo-random scalar in `[-1, 1]`; a sample at `(x, y)`
+/// smoothstep-interpolates the four corners of the unit cell that
+/// contains `(x, y)`.
+///
+/// The "pseudo-random scalar" comes from the same seeded 512-entry
+/// permutation table the gradient modes use: the cell-corner hash
+/// `perm[(perm[ix & 0xFF] + iy) & 0xFF]` is a `u8`, which we re-map
+/// from `[0, 255]` to `[-1, 1]` via `(h / 127.5) − 1`. The
+/// smoothstep is the same quintic `t³·(t·(6t − 15) + 10)` `fade`
+/// curve [`perlin2`] uses (C² continuous at cell boundaries).
+///
+/// Output is bounded by `[-1, 1]` exactly because both the per-corner
+/// values and the interpolation weights are bounded that way and a
+/// convex combination of values in `[-1, 1]` stays in `[-1, 1]`. That
+/// matches [`perlin2`] / [`simplex2`] so the shared fBm accumulator
+/// and palette index in [`render`] treat all three modes uniformly.
+fn value2(perm: &[u8; 512], x: f32, y: f32) -> f32 {
+    let xi = x.floor() as i32;
+    let yi = y.floor() as i32;
+    let xf = x - x.floor();
+    let yf = y - y.floor();
+    let u = fade(xf);
+    let v = fade(yf);
+    let aa = perm[((perm[(xi & 0xFF) as usize] as i32 + yi) & 0xFF) as usize];
+    let ab = perm[((perm[(xi & 0xFF) as usize] as i32 + yi + 1) & 0xFF) as usize];
+    let ba = perm[((perm[((xi + 1) & 0xFF) as usize] as i32 + yi) & 0xFF) as usize];
+    let bb = perm[((perm[((xi + 1) & 0xFF) as usize] as i32 + yi + 1) & 0xFF) as usize];
+    // Map the u8 corner hashes from [0, 255] to [-1, 1].
+    let aa = (aa as f32) * (2.0 / 255.0) - 1.0;
+    let ab = (ab as f32) * (2.0 / 255.0) - 1.0;
+    let ba = (ba as f32) * (2.0 / 255.0) - 1.0;
+    let bb = (bb as f32) * (2.0 / 255.0) - 1.0;
+    let x1 = lerp(aa, ba, u);
+    let x2 = lerp(ab, bb, u);
+    lerp(x1, x2, v)
 }
 
 #[inline]
@@ -728,6 +800,203 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- Value / lattice noise ---------------------------------------
+
+    #[test]
+    fn value_renders() {
+        let img = render(&map(&[("type", "value"), ("w", "16"), ("h", "16")])).unwrap();
+        assert_eq!(img.width, 16);
+        assert_eq!(img.height, 16);
+        assert_eq!(img.pixels.len(), 16 * 16 * 4);
+    }
+
+    #[test]
+    fn value_lattice_alias() {
+        // `type=lattice` is just a more textbook-y name for the same
+        // algorithm; output must be byte-identical to `type=value`.
+        let v = render(&map(&[
+            ("type", "value"),
+            ("w", "40"),
+            ("h", "40"),
+            ("seed", "9"),
+        ]))
+        .unwrap();
+        let l = render(&map(&[
+            ("type", "lattice"),
+            ("w", "40"),
+            ("h", "40"),
+            ("seed", "9"),
+        ]))
+        .unwrap();
+        assert_eq!(v.pixels, l.pixels);
+    }
+
+    #[test]
+    fn value_deterministic_per_seed() {
+        let a = render(&map(&[
+            ("type", "value"),
+            ("w", "32"),
+            ("h", "32"),
+            ("seed", "11"),
+        ]))
+        .unwrap();
+        let b = render(&map(&[
+            ("type", "value"),
+            ("w", "32"),
+            ("h", "32"),
+            ("seed", "11"),
+        ]))
+        .unwrap();
+        assert_eq!(a.pixels, b.pixels);
+    }
+
+    #[test]
+    fn value_seeds_differ() {
+        let a = render(&map(&[
+            ("type", "value"),
+            ("w", "32"),
+            ("h", "32"),
+            ("seed", "1"),
+        ]))
+        .unwrap();
+        let b = render(&map(&[
+            ("type", "value"),
+            ("w", "32"),
+            ("h", "32"),
+            ("seed", "2"),
+        ]))
+        .unwrap();
+        assert_ne!(a.pixels, b.pixels);
+    }
+
+    #[test]
+    fn value_distinct_from_perlin_and_simplex() {
+        // Value noise is a categorically different basis — it interpolates
+        // lattice scalars, not gradients of a hidden field. Output must
+        // not coincide with either gradient-noise mode at the same seed.
+        let v = render(&map(&[
+            ("type", "value"),
+            ("w", "48"),
+            ("h", "48"),
+            ("seed", "7"),
+        ]))
+        .unwrap();
+        let p = render(&map(&[
+            ("type", "perlin"),
+            ("w", "48"),
+            ("h", "48"),
+            ("seed", "7"),
+        ]))
+        .unwrap();
+        let s = render(&map(&[
+            ("type", "simplex"),
+            ("w", "48"),
+            ("h", "48"),
+            ("seed", "7"),
+        ]))
+        .unwrap();
+        assert_ne!(v.pixels, p.pixels);
+        assert_ne!(v.pixels, s.pixels);
+    }
+
+    #[test]
+    fn value_distinct_from_worley() {
+        // And distinct from the cellular basis too — value noise is the
+        // third independent noise family this module ships.
+        let v = render(&map(&[
+            ("type", "value"),
+            ("w", "48"),
+            ("h", "48"),
+            ("seed", "13"),
+        ]))
+        .unwrap();
+        let w = render(&map(&[
+            ("type", "worley"),
+            ("w", "48"),
+            ("h", "48"),
+            ("seed", "13"),
+        ]))
+        .unwrap();
+        assert_ne!(v.pixels, w.pixels);
+    }
+
+    #[test]
+    fn value_raw_sample_is_bounded() {
+        // value2 must stay strictly inside [-1, 1] across a dense grid:
+        // both the corner values and the smoothstep weights are bounded
+        // in [-1, 1] and [0, 1] respectively, so a convex combination of
+        // values in [-1, 1] cannot escape. Anything outside would mean
+        // the fBm accumulator + palette index can drift past the table.
+        let perm = build_perm(123);
+        let mut max_abs = 0.0f32;
+        for yi in 0..200 {
+            for xi in 0..200 {
+                let v = value2(&perm, xi as f32 * 0.13, yi as f32 * 0.13);
+                max_abs = max_abs.max(v.abs());
+            }
+        }
+        assert!(
+            max_abs <= 1.0001,
+            "value sample escaped [-1, 1]: max |v| = {max_abs}"
+        );
+        // ...but it must actually exercise a meaningful slice of the
+        // range, not sit near zero (which would mean a dead generator).
+        assert!(max_abs > 0.3, "value output looks degenerate: {max_abs}");
+    }
+
+    #[test]
+    fn value_at_integer_lattice_matches_corner() {
+        // The smoothstep `fade(0) = 0`, so a sample exactly on a lattice
+        // corner must equal the corner's own random scalar (no
+        // interpolation contribution from the neighbours). Verifies the
+        // hashing direction + the [-1, 1] remap are wired correctly.
+        let perm = build_perm(99);
+        // Sample at (3, 5) — pure integer coordinates.
+        let v = value2(&perm, 3.0, 5.0);
+        // The corner at (3, 5) is perm[(perm[3] + 5) & 0xFF] re-mapped.
+        let raw = perm[((perm[3] as i32 + 5) & 0xFF) as usize];
+        let expected = (raw as f32) * (2.0 / 255.0) - 1.0;
+        assert!(
+            (v - expected).abs() < 1e-6,
+            "value(integer lattice) = {v}, expected corner = {expected}"
+        );
+    }
+
+    #[test]
+    fn value_image_is_non_degenerate() {
+        // A working multi-octave value-noise render should exercise more
+        // than a handful of palette indices.
+        let img = render(&map(&[
+            ("type", "value"),
+            ("w", "48"),
+            ("h", "48"),
+            ("seed", "21"),
+        ]))
+        .unwrap();
+        use std::collections::BTreeSet;
+        let mut colors: BTreeSet<[u8; 3]> = BTreeSet::new();
+        for px in img.pixels.chunks(4) {
+            colors.insert([px[0], px[1], px[2]]);
+        }
+        assert!(
+            colors.len() >= 8,
+            "value image looks degenerate: only {} distinct colours",
+            colors.len()
+        );
+    }
+
+    #[test]
+    fn unknown_type_error_lists_value() {
+        // The error path should advertise the new mode so users can
+        // discover it.
+        let r = render(&map(&[("type", "ridged")]));
+        let msg = format!("{:?}", r.unwrap_err());
+        assert!(
+            msg.contains("value"),
+            "unknown-type error should advertise `value`: {msg}"
+        );
     }
 
     #[test]
