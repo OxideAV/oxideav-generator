@@ -6,7 +6,8 @@ audio synth (sine / square / triangle / sawtooth / supersaw
 Karplus-Strong pluck / linear + exponential chirp / FM / AM /
 sub-audio tremolo (unipolar-cosine LFO over any carrier) /
 ring modulation / DTMF touch-tones / ADSR-enveloped tone / Klatt-style
-two-formant vowel synthesizer / multi-tone /
+two-formant vowel synthesizer / Shepard tone (octave-spaced
+Gaussian-weighted sine stack) / multi-tone /
 white-pink-brown-blue-violet noise / silence),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes), procedural imagery
@@ -56,6 +57,8 @@ generate://synth?type=ringmod&f1=440&f2=60&duration=2
 generate://synth?type=dtmf&digits=0123456789&tone=0.1&gap=0.05
 generate://synth?type=adsr&wave=sine&freq=440&attack=0.02&decay=0.1&sustain=0.7&release=0.2&duration=2
 generate://synth?type=formant&vowel=A&f0=220&duration=0.5
+generate://synth?type=shepard&voices=8&duration=2
+generate://synth?type=shepard&freq=55&voices=8&center_freq=622&sigma=1.5&duration=2
 generate://synth?type=multitone&freqs=440,1000,2200&duration=1
 generate://synth?type=noise&color=pink&duration=10
 generate://synth?type=noise&color=blue&seed=42&duration=10
@@ -117,6 +120,49 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 16 (2026-06-05): synth catalogue gained `shepard` — a Shepard tone,
+the classical octave-circular-pitch construct described in Roger
+Shepard's 1964 *Journal of the Acoustical Society of America* paper
+"Circularity in Judgments of Relative Pitch" (vol. 36 no. 12 p. 2346).
+The output is the weighted sum of `voices` sine tones spaced exactly one
+octave apart starting at `freq`, with each voice scaled by a Gaussian
+envelope in log-frequency space centred on `center_freq` with width
+`sigma` octaves: `w_k = exp(-(log2(f_k / center_freq) / sigma)²)`. The
+sum is normalised by `Σ w_k`, so the worst-case peak (all voices
+momentarily aligned) sits exactly at `amplitude` for every
+`(freq, voices, center_freq, sigma)` combination and every sample rate.
+Defaults are `freq=55` (lowest voice), `voices=8` (clamped to `[1, 12]`),
+`sigma=1.5` octaves (clamped to `[0.1, 6.0]`), and
+`center_freq = freq · 2^((voices−1)/2)` — the geometric mean of the
+voice frequencies, i.e. the log-midpoint of the octave stack (for the
+default 55 Hz × 8 voices that lands at ≈ 622 Hz). The Gaussian
+log-envelope is the canonical shape Shepard uses to render the absolute-
+pitch information ambiguous while preserving a clear chroma percept,
+distinct from the in-tree `multitone` (which is a flat equal-weight sum
+of an arbitrary frequency list — no log-envelope, no octave constraint,
+no centre/sigma). Eight new tests cover (a) basic render shape +
+amplitude bound on a default 8-voice render, (b) `voices=1` collapse to
+sample-equivalent in-tree `sine` at the matching frequency (the weight
+normalisation `scale = amplitude / w_0` cancels the single Gaussian),
+(c) octave-spacing verified by single-bin DFT — magnitudes at `f0` and
+`2·f0` both register meaningfully while an off-octave probe at `1.3·f0`
+is much quieter, (d) Gaussian-envelope identity — shifting `center_freq`
+across the stack reshapes the mix audibly (max abs sample difference
+> 0.05), with both renders staying inside `±amplitude`, (e) `freq ≤ 0`
+erroring out, (f) `center_freq ≤ 0` erroring out, (g) `voices=100`
+clamping silently to 12 (matches the explicit voices=12 render bit-for-
+bit), (h) the dispatcher's "unknown type" hint advertising `shepard`,
+(i) the default-centre algebraic identity — a default render with no
+explicit `center_freq` agrees sample-for-sample with one that passes the
+log-midpoint formula explicitly. Plus a single-frame URI roundtrip in
+`tests/source_uri.rs` confirms `generate://synth?type=shepard&voices=6&duration=0.05`
+returns one `AudioFrame` of 400 mono S16 LE samples (800 bytes) with the
+peak inside the `amplitude=0.8` S16 bound. Pure first-principles DSP;
+sole reference is the 1964 Shepard JASA paper, a public academic source.
+Reaches the URI path (`generate://synth?type=shepard&…`), the `synth:`
+shorthand via the existing comma-arg parser, and the `audio.synth`
+filter through the existing dispatcher (no new registration).
 
 Round 14 (2026-06-03): image noise gained `value` (alias `lattice`) —
 classical value noise, the textbook predecessor to gradient noise that

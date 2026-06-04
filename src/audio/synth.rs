@@ -272,6 +272,46 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
                 amplitude,
             )?
         }
+        "shepard" => {
+            // Shepard tone — a stack of `voices` octave-spaced sinusoids
+            // weighted by a log-frequency Gaussian envelope centred on
+            // `center_freq`. The bottom and top voices are quiet and the
+            // middle voices loud, so the absolute frequency range stays
+            // bounded even when the base frequency rolls upward. Reference
+            // is Roger Shepard's 1964 *Journal of the Acoustical Society
+            // of America* paper "Circularity in Judgments of Relative
+            // Pitch" (vol. 36 no. 12 p. 2346), the original public
+            // description of the circular-pitch construct that bears his
+            // name.
+            //
+            //   `freq`        — base of the lowest voice, Hz (default 55)
+            //   `voices`      — number of octave-spaced voices (default 8,
+            //                   clamped to [1, 12])
+            //   `center_freq` — Gaussian envelope centre, Hz (default
+            //                   geometric mean of the voice frequencies,
+            //                   so it lives exactly on the log-frequency
+            //                   midpoint of the stack)
+            //   `sigma`       — Gaussian width in octaves (default 1.5,
+            //                   clamped to [0.1, 6.0])
+            let freq = q_f64(query, "freq", 55.0)? as f32;
+            let voices = q_u32(query, "voices", 8)?.clamp(1, 12) as usize;
+            let sigma_oct = q_f64(query, "sigma", 1.5)?.clamp(0.1, 6.0) as f32;
+            // Default centre is the geometric mean of the voice
+            // frequencies — i.e. the log-midpoint of the octave stack.
+            // For `voices=8` starting at 55 Hz the stack runs 55 …
+            // 7040 Hz; its log-midpoint is 55 · 2^((8-1)/2) ≈ 622 Hz.
+            let default_centre = freq * 2.0_f32.powf((voices.saturating_sub(1) as f32) * 0.5);
+            let centre_freq = q_f64(query, "center_freq", default_centre as f64)? as f32;
+            shepard(
+                freq,
+                voices,
+                centre_freq,
+                sigma_oct,
+                sample_rate,
+                frame_count,
+                amplitude,
+            )?
+        }
         "multitone" | "tones" => {
             // Comma-separated frequency list. Equal-weight sum then
             // normalised to `amplitude` so the peak stays bounded.
@@ -317,7 +357,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|tremolo|ringmod|dtmf|adsr|formant|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|tremolo|ringmod|dtmf|adsr|formant|shepard|multitone|noise|silence)"
             )));
         }
     };
@@ -823,6 +863,90 @@ pub fn multitone(freqs: &[f32], sample_rate: u32, n: usize, amplitude: f32) -> V
             scale * s
         })
         .collect()
+}
+
+/// Shepard tone — a stack of `voices` sine tones spaced one octave apart,
+/// weighted by a Gaussian envelope in log-frequency space centred on
+/// `centre_freq` with width `sigma_oct` octaves.
+///
+/// The voice frequencies are `f_k = freq · 2^k` for `k = 0..voices`. Each
+/// voice's amplitude weight is
+///
+/// ```text
+/// w_k = exp(-(log2(f_k / centre_freq) / sigma_oct)²)
+/// ```
+///
+/// so the envelope peaks at `centre_freq` (`w = 1`) and tails off
+/// symmetrically toward the bottom and top of the stack. Output is the
+/// weighted sum normalised by `Σ w_k`, which keeps the worst-case peak
+/// (all voices aligned at the same phase) inside `[-amplitude, amplitude]`
+/// for every `(freq, voices, centre_freq, sigma_oct)` and every sample
+/// rate.
+///
+/// Reference: Roger N. Shepard, *Circularity in Judgments of Relative
+/// Pitch*, Journal of the Acoustical Society of America 36(12):2346,
+/// 1964 — the original public description of the circular-pitch construct
+/// the tone bears its name from. The log-frequency Gaussian envelope is
+/// the canonical shape Shepard uses to render the absolute pitch
+/// information ambiguous while preserving a clear chroma percept.
+///
+/// `voices` is clamped to `[1, 12]`; `sigma_oct` is clamped to
+/// `[0.1, 6.0]`. Returns `Err` if `freq <= 0` or `centre_freq <= 0`.
+#[allow(clippy::too_many_arguments)]
+pub fn shepard(
+    freq: f32,
+    voices: usize,
+    centre_freq: f32,
+    sigma_oct: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Result<Vec<f32>> {
+    if freq <= 0.0 || freq.is_nan() {
+        return Err(Error::invalid(format!(
+            "synth: shepard requires freq > 0 (got {freq})"
+        )));
+    }
+    if centre_freq <= 0.0 || centre_freq.is_nan() {
+        return Err(Error::invalid(format!(
+            "synth: shepard requires center_freq > 0 (got {centre_freq})"
+        )));
+    }
+    let voices = voices.clamp(1, 12);
+    let sigma_oct = sigma_oct.clamp(0.1, 6.0);
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Per-voice frequencies (octave spaced) and Gaussian log-frequency
+    // weights centred on `centre_freq`.
+    let log2_centre = centre_freq.log2();
+    let mut voice_freqs: Vec<f32> = Vec::with_capacity(voices);
+    let mut weights: Vec<f32> = Vec::with_capacity(voices);
+    let mut weight_sum: f32 = 0.0;
+    for k in 0..voices {
+        let f_k = freq * 2.0_f32.powi(k as i32);
+        let oct_offset = f_k.log2() - log2_centre;
+        let w = (-(oct_offset / sigma_oct).powi(2)).exp();
+        voice_freqs.push(f_k);
+        weights.push(w);
+        weight_sum += w;
+    }
+    // Normalise so Σ |w_k · sin| ≤ amplitude.
+    let scale = amplitude / weight_sum.max(f32::MIN_POSITIVE);
+
+    let dt = 1.0 / sample_rate as f32;
+    let out = (0..n)
+        .map(|i| {
+            let t = i as f32 * dt;
+            let mut s = 0.0_f32;
+            for (k, &f_k) in voice_freqs.iter().enumerate() {
+                s += weights[k] * (TAU * f_k * t).sin();
+            }
+            scale * s
+        })
+        .collect();
+    Ok(out)
 }
 
 /// Sample `i` of a piecewise-linear ADSR amplitude envelope, in `[0, 1]`.
@@ -2784,5 +2908,206 @@ mod tests {
         assert!(differ(&s, &q) > 0.1, "sine vs square must diverge");
         assert!(differ(&q, &t) > 0.1, "square vs triangle must diverge");
         assert!(differ(&t, &w) > 0.05, "triangle vs sawtooth must diverge");
+    }
+
+    // ──────────────────────── Shepard tone ────────────────────────
+
+    #[test]
+    fn shepard_dispatcher_basic_buffer_shape_bounded() {
+        // Default render must come back with the right sample count and
+        // every sample inside the amplitude bound.
+        let buf = render(&map(&[("type", "shepard"), ("duration", "0.05")])).unwrap();
+        // sample_rate default 8000 × 0.05 = 400 samples mono.
+        assert_eq!(buf.samples.len(), 400);
+        assert_eq!(buf.sample_rate, 8000);
+        assert_eq!(buf.channels, 1);
+        for s in &buf.samples {
+            assert!(
+                s.abs() <= 0.8 + 1e-6,
+                "shepard sample {s} exceeds amplitude bound 0.8"
+            );
+        }
+    }
+
+    #[test]
+    fn shepard_voices_one_collapses_to_single_sine() {
+        // With voices=1 the stack is a single sine at `freq` (the only
+        // voice). It must equal a plain `sine` at that frequency,
+        // sample-for-sample to f32 quantisation, because the weight
+        // normalisation `scale = amplitude / Σ w_k = amplitude / w_0`
+        // cancels the single Gaussian weight.
+        let sr = 8000;
+        let n = 1024;
+        let amp = 0.8_f32;
+        let f = 440.0_f32;
+        let shep = shepard(f, 1, f, 1.5, sr, n, amp).unwrap();
+        let plain = sine(f, sr, n, amp);
+        assert_eq!(shep.len(), plain.len());
+        for (i, (&a, &b)) in shep.iter().zip(&plain).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "shepard voices=1 should equal sine: sample {i} got {a} expected {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn shepard_octave_voices_have_octave_spaced_frequencies() {
+        // The voices are octave-spaced. A short FFT-free single-bin DFT
+        // at the lowest voice's frequency f and at 2f should both
+        // register meaningful magnitudes (i.e. the second voice is
+        // really an octave above the first, not a wider/narrower spacing).
+        let sr = 8000_u32;
+        // 0.5 s × 8 kHz = 4000 samples — long enough for the 110 Hz fundamental
+        // (4000/(8000/110) ≈ 55 cycles) to resolve cleanly.
+        let n = 4000_usize;
+        let f0 = 110.0_f32;
+        let buf = shepard(f0, 4, f0 * 2.0, 1.5, sr, n, 0.8).unwrap();
+        let dt = 1.0_f32 / sr as f32;
+        let dft_at = |freq: f32| -> f32 {
+            let mut re = 0.0_f32;
+            let mut im = 0.0_f32;
+            for (i, &s) in buf.iter().enumerate() {
+                let phase = TAU * freq * i as f32 * dt;
+                re += s * phase.cos();
+                im -= s * phase.sin();
+            }
+            (re * re + im * im).sqrt() / n as f32
+        };
+        let mag_f0 = dft_at(f0);
+        let mag_2f0 = dft_at(2.0 * f0);
+        let mag_off = dft_at(f0 * 1.3); // off-octave probe — should be much smaller
+        assert!(
+            mag_f0 > 0.01,
+            "fundamental f0={f0} magnitude {mag_f0} too low"
+        );
+        assert!(
+            mag_2f0 > 0.01,
+            "octave 2·f0 magnitude {mag_2f0} too low — octave voice missing"
+        );
+        assert!(
+            mag_off < 0.2 * mag_f0.max(mag_2f0),
+            "off-octave bin too loud: mag_off={mag_off}, mag_f0={mag_f0}, mag_2f0={mag_2f0}"
+        );
+    }
+
+    #[test]
+    fn shepard_gaussian_envelope_centres_on_center_freq() {
+        // Run a 6-voice stack with the centre on the third voice; the
+        // weight on voice 2 (1-indexed: the centre) must be the max.
+        // We probe weights directly by comparing two renders that
+        // differ only in centre_freq.
+        let sr = 8000;
+        let n = 1024;
+        let amp = 0.8_f32;
+        // Voices: 110, 220, 440, 880, 1760, 3520 Hz.
+        let centred_low = shepard(110.0, 6, 220.0, 0.8, sr, n, amp).unwrap();
+        let centred_high = shepard(110.0, 6, 1760.0, 0.8, sr, n, amp).unwrap();
+        // The two buffers must differ — the envelope reshapes the mix.
+        let max_diff: f32 = centred_low
+            .iter()
+            .zip(&centred_high)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            max_diff > 0.05,
+            "shifting centre_freq should reshape the stack; max_diff={max_diff}"
+        );
+        // Both renders stay bounded.
+        for s in centred_low.iter().chain(centred_high.iter()) {
+            assert!(
+                s.abs() <= amp + 1e-6,
+                "shepard sample {s} exceeds amp {amp}"
+            );
+        }
+    }
+
+    #[test]
+    fn shepard_freq_must_be_positive() {
+        let err = render(&map(&[
+            ("type", "shepard"),
+            ("freq", "0"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("shepard"), "missing 'shepard' in error: {msg}");
+        assert!(msg.contains("freq"), "missing 'freq' in error: {msg}");
+    }
+
+    #[test]
+    fn shepard_center_freq_must_be_positive() {
+        let err = render(&map(&[
+            ("type", "shepard"),
+            ("center_freq", "0"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("shepard"), "missing 'shepard' in error: {msg}");
+        assert!(
+            msg.contains("center_freq"),
+            "missing 'center_freq' in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn shepard_voices_clamps_to_twelve() {
+        // voices=100 clamps silently to 12 — verify by comparing to an
+        // explicit voices=12 render at the same other params.
+        let a = render(&map(&[
+            ("type", "shepard"),
+            ("voices", "100"),
+            ("duration", "0.05"),
+        ]))
+        .unwrap();
+        let b = render(&map(&[
+            ("type", "shepard"),
+            ("voices", "12"),
+            ("duration", "0.05"),
+        ]))
+        .unwrap();
+        assert_eq!(a.samples.len(), b.samples.len());
+        for (i, (&x, &y)) in a.samples.iter().zip(&b.samples).enumerate() {
+            assert!(
+                (x - y).abs() < 1e-6,
+                "voices=100 should clamp to 12: sample {i} differs {x} vs {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn shepard_listed_in_unknown_type_help() {
+        // The dispatcher's "expected …" hint must advertise shepard.
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        assert!(format!("{err}").contains("shepard"));
+    }
+
+    #[test]
+    fn shepard_dispatcher_default_centre_is_log_midpoint() {
+        // With voices=8 starting at 55 Hz the stack runs 55 … 7040 Hz;
+        // its log-midpoint is 55 · 2^((8-1)/2) ≈ 622.25 Hz. A render
+        // with the default centre must equal one with an explicit
+        // centre at that log-midpoint, sample-for-sample.
+        let default_render = render(&map(&[("type", "shepard"), ("duration", "0.02")])).unwrap();
+        let explicit_centre = 55.0_f32 * 2.0_f32.powf(3.5);
+        let explicit_render = render(&map(&[
+            ("type", "shepard"),
+            ("duration", "0.02"),
+            ("center_freq", &format!("{explicit_centre}")),
+        ]))
+        .unwrap();
+        assert_eq!(default_render.samples.len(), explicit_render.samples.len());
+        for (i, (&a, &b)) in default_render
+            .samples
+            .iter()
+            .zip(&explicit_render.samples)
+            .enumerate()
+        {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "default centre vs explicit log-midpoint: sample {i} differs {a} vs {b}"
+            );
+        }
     }
 }

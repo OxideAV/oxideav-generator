@@ -8,6 +8,46 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio synth gained `shepard` — a Shepard tone, the classical
+  octave-circular-pitch construct described in Roger Shepard's 1964
+  *Journal of the Acoustical Society of America* paper "Circularity in
+  Judgments of Relative Pitch" (vol. 36 no. 12 p. 2346). The output is
+  the weighted sum of `voices` sine tones spaced one octave apart
+  starting at `freq`, each scaled by a Gaussian envelope in log-
+  frequency space centred on `center_freq` with width `sigma` octaves
+  (`w_k = exp(-(log2(f_k / center_freq) / sigma)²)`), then normalised
+  by `Σ w_k` so the worst-case aligned peak sits at `amplitude`.
+  Defaults: `freq=55` (lowest voice), `voices=8` (clamped to
+  `[1, 12]`), `sigma=1.5` octaves (clamped to `[0.1, 6.0]`), and
+  `center_freq = freq · 2^((voices−1)/2)` — the geometric mean of the
+  voice frequencies, i.e. the log-midpoint of the octave stack (≈ 622
+  Hz for the default 55 Hz × 8 voices). The Gaussian log-envelope is
+  the canonical Shepard shape: bottom and top voices stay quiet while
+  the middle of the stack carries the energy, the absolute frequency
+  range stays bounded across the whole stack, and a sweep of `freq`
+  produces a pitch percept that rises while the spectrum stays
+  enveloped. Distinct from the in-tree `multitone` (flat equal-weight
+  sum of an arbitrary frequency list — no log-envelope, no octave
+  constraint, no centre/sigma). Eight unit tests cover the basic
+  render shape + bounded amplitude, the `voices=1` collapse to plain
+  `sine` at the same frequency (the weight normalisation cancels the
+  single Gaussian term), octave-spacing via a single-bin DFT (the
+  fundamental and octave bins both register meaningfully while a
+  1.3·f0 probe is much quieter), `center_freq` reshaping the mix
+  while keeping output bounded, the `freq ≤ 0` / `center_freq ≤ 0`
+  error paths, `voices=100` clamping silently to 12, the dispatcher's
+  "unknown type" hint advertising `shepard`, and the default-centre
+  algebraic identity that the implicit log-midpoint equals an
+  explicit `center_freq = freq · 2^((voices−1)/2)`. Plus a single-
+  frame URI roundtrip in `tests/source_uri.rs` confirms
+  `generate://synth?type=shepard&voices=6&duration=0.05` returns one
+  `AudioFrame` of 400 mono S16 LE samples (800 bytes) with peak
+  inside the `amplitude=0.8` S16 bound. Pure first-principles DSP;
+  sole reference is the 1964 Shepard JASA paper. Reaches the URI
+  path (`generate://synth?type=shepard&…`), the `synth:` shorthand
+  via the existing comma-arg parser, and the `audio.synth` filter
+  through the existing dispatcher (no new registration).
+
 - Audio synth gained `tremolo` (alias `trem`) — a sub-audio amplitude
   envelope laid over an arbitrary carrier wave. The carrier is selected
   via `wave=sine|square|triangle|sawtooth` (mirroring the `adsr`
