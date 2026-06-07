@@ -18,6 +18,7 @@
 //! | `testsrc:`               | `generate://testsrc`                            |
 //! | `smptebars:`             | `generate://smptebars`                          |
 //! | `zoneplate:`             | `generate://zoneplate`                          |
+//! | `grating:`               | `generate://grating`                            |
 //! | `noise:perlin`           | `generate://noise?type=perlin`                  |
 //! | `label:Hello world`      | `generate://label?text=Hello%20world`           |
 //!
@@ -93,6 +94,12 @@ fn try_translate(input: &str) -> Option<String> {
             return Some("generate://zoneplate".to_string());
         }
         return Some(format!("generate://zoneplate?{rest}"));
+    }
+    if let Some(rest) = input.strip_prefix("grating:") {
+        if rest.is_empty() {
+            return Some("generate://grating".to_string());
+        }
+        return Some(format!("generate://grating?{rest}"));
     }
     if let Some(rest) = input.strip_prefix("noise:") {
         if rest.is_empty() {
@@ -298,6 +305,19 @@ mod tests {
     #[test]
     fn noise_perlin() {
         assert_eq!(translate("noise:perlin"), "generate://noise?type=perlin");
+    }
+
+    #[test]
+    fn grating_bare() {
+        assert_eq!(translate("grating:"), "generate://grating");
+    }
+
+    #[test]
+    fn grating_with_query() {
+        assert_eq!(
+            translate("grating:freq=8&angle=45"),
+            "generate://grating?freq=8&angle=45"
+        );
     }
 
     #[test]

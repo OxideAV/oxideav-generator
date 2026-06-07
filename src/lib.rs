@@ -11,9 +11,10 @@
 //! 2. **Zero-input filter** — every generator is also exposed as a
 //!    [`StreamFilter`](oxideav_core::StreamFilter) factory under the
 //!    `audio.synth`, `image.xc`, `image.gradient`, `image.pattern`,
-//!    `image.fractal`, `image.plasma`, `image.noise`, `video.testsrc`,
-//!    `video.smptebars`, `video.fractal_zoom`, `video.gradient_animate`,
-//!    `video.zoneplate` names. Register them via [`register_filters`] on a
+//!    `image.grating`, `image.fractal`, `image.plasma`, `image.noise`,
+//!    `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
+//!    `video.gradient_animate`, `video.zoneplate` names. Register them
+//!    via [`register_filters`] on a
 //!    [`RuntimeContext`](oxideav_core::RuntimeContext).
 //!
 //! For the common case where you want both shapes installed at once,
@@ -43,7 +44,8 @@
 //!   formant (Klatt-style two-formant vowel synthesizer) / multitone
 //!   (sum of sines) / white-pink-brown-blue-violet noise / silence.
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,
-//!   checkerboard / horizontal / vertical / diagonal patterns.
+//!   checkerboard / horizontal / vertical / diagonal patterns,
+//!   sinusoidal grating (single-frequency cos at a chosen orientation).
 //! - **Procedural images** — Mandelbrot + Julia fractals, plasma
 //!   (recursive midpoint displacement), Perlin + simplex gradient
 //!   noise, Worley cellular noise (`type=worley`, alias `cellular`;
@@ -113,6 +115,7 @@ mod tests {
             "image.xc",
             "image.gradient",
             "image.pattern",
+            "image.grating",
             "image.fractal",
             "image.plasma",
             "image.noise",

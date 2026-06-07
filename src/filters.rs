@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::audio::f32_sample_to_i16;
 use crate::audio::synth as audio_synth;
-use crate::image::{fractal, gradient, noise, pattern, plasma, xc, Rgba8Image};
+use crate::image::{fractal, gradient, grating, noise, pattern, plasma, xc, Rgba8Image};
 use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc, zoneplate};
 
 /// Install every generator filter into `ctx.filters`.
@@ -36,6 +36,8 @@ pub fn register_filters(ctx: &mut RuntimeContext) {
         .register("image.gradient", Box::new(make_image_gradient));
     ctx.filters
         .register("image.pattern", Box::new(make_image_pattern));
+    ctx.filters
+        .register("image.grating", Box::new(make_image_grating));
     ctx.filters
         .register("image.fractal", Box::new(make_image_fractal));
     ctx.filters
@@ -146,6 +148,9 @@ fn make_image_gradient(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn S
 }
 fn make_image_pattern(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
     image_filter(pattern::render(&params_to_query(params))?)
+}
+fn make_image_grating(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
+    image_filter(grating::render(&params_to_query(params))?)
 }
 fn make_image_fractal(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
     image_filter(fractal::render(&params_to_query(params))?)

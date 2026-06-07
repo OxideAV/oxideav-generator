@@ -8,6 +8,7 @@
 
 pub mod fractal;
 pub mod gradient;
+pub mod grating;
 #[cfg(feature = "label")]
 pub mod label;
 pub mod noise;

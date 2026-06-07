@@ -91,6 +91,7 @@ fn image_filters_have_zero_input_ports() {
         "image.xc",
         "image.gradient",
         "image.pattern",
+        "image.grating",
         "image.fractal",
         "image.plasma",
         "image.noise",

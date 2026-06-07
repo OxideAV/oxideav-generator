@@ -144,6 +144,26 @@ fn plasma_default_returns_one_video_frame() {
     assert_eq!(v.planes[0].data.len(), 16 * 16 * 4);
 }
 
+#[test]
+fn grating_default_returns_one_video_frame_with_unit_peak() {
+    // freq=0 + phase=0 → cos(0) = 1 across the whole image → every
+    // pixel is RGBA (255, 255, 255, 255). 4×4 = 64 bytes.
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://grating?w=4&h=4&freq=0&phase=0&amplitude=1",
+    );
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 1);
+    let Frame::Video(v) = &frames[0] else {
+        panic!();
+    };
+    assert_eq!(v.planes[0].data.len(), 64);
+    for chunk in v.planes[0].data.chunks_exact(4) {
+        assert_eq!(chunk, &[255, 255, 255, 255]);
+    }
+}
+
 // ---------------------------- Video ----------------------------
 
 #[test]

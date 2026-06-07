@@ -10,7 +10,8 @@ two-formant vowel synthesizer / Shepard tone (octave-spaced
 Gaussian-weighted sine stack) / multi-tone /
 white-pink-brown-blue-violet noise / silence),
 image basics (solid colour, linear / radial gradient,
-checkerboard, horizontal / vertical stripes), procedural imagery
+checkerboard, horizontal / vertical stripes, sinusoidal grating —
+single-frequency cos at a chosen orientation), procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin + simplex gradient
 noise, value / lattice noise, Worley cellular noise), and video
 (classical broadcast `testsrc`, SMPTE colour bars, animated Mandelbrot
@@ -69,6 +70,8 @@ generate://xc?color=%23ff0000      # #ff0000 percent-encoded
 generate://gradient?w=640&h=480&from=red&to=blue&direction=horizontal
 generate://gradient?w=640&h=480&from=red&to=blue&type=radial
 generate://pattern?type=checkerboard&w=640&h=480&size=32
+generate://grating?w=640&h=480&freq=8&angle=0&phase=0
+generate://grating?w=640&h=480&freq=16&angle=45&amplitude=0.7
 generate://fractal?type=mandelbrot&w=640&h=480&cx=-0.5&cy=0&zoom=2&iter=256
 generate://fractal?type=julia&w=640&h=480&cx=-0.7&cy=0.27&iter=256
 generate://plasma?w=640&h=480&seed=42
@@ -103,6 +106,7 @@ registry. Recognised prefixes:
 | `testsrc:`             | `generate://testsrc`                                         |
 | `smptebars:`           | `generate://smptebars`                                       |
 | `zoneplate:`           | `generate://zoneplate`                                       |
+| `grating:`             | `generate://grating`                                         |
 | `noise:perlin`         | `generate://noise?type=perlin`                               |
 
 `probe` / `transcode` / `remux` / `run` accept the canonical
@@ -120,6 +124,46 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 17 (2026-06-07): image catalogue gained `grating` — a sinusoidal
+grating, the canonical single-tone spatial-frequency probe from Fourier
+image analysis. Every pixel is set to
+`0.5 + 0.5 · amplitude · cos(2π · (f_x · x + f_y · y) + phase_radians)`
+with the spatial frequency vector derived from `freq=` (cycles across
+the image width) and `angle=` (degrees clockwise from the +x axis):
+`f_x = freq · cos(θ) / w`, `f_y = freq · sin(θ) / w`. Phase shift is
+controlled by `phase=` in degrees; `amplitude=` clamps to `[0, 1]`
+(0 → flat mid-grey, 1 → reaches full white and full black on the
+peaks). Near-zero `cos(θ)` / `sin(θ)` (|x|<1e-6) snap to 0 so the
+canonical horizontal (`angle=0`) and vertical (`angle=90`) gratings
+are exactly axis-aligned without f32 round-off leakage on the
+orthogonal axis. Output is greyscale RGBA8 with `R=G=B=byte`,
+`A=255`, the same rendering convention as the in-tree `zoneplate`.
+Distinct from `zoneplate` — the zone plate sweeps every spatial
+frequency simultaneously via the radial chirp `cos(k·r²)` while the
+grating isolates exactly one `(magnitude, direction)` pair on a flat
+plane. Distinct from `pattern` — the grating is C∞-smooth while the
+checker / stripes patterns are piecewise constant. Eleven new unit
+tests cover (a) dimensions match the query, (b) `amplitude=0`
+collapses to flat mid-grey, (c) `freq=0 phase=0` is flat peak white,
+(d) `freq=0 phase=180` is flat black, (e) horizontal grating
+(`angle=0`) is constant down each column, (f) vertical grating
+(`angle=90`) is constant across each row, (g) `freq=1` on a 16-wide
+image hits the cos(0)=1 / cos(π)=-1 / cos(π/2)≈0 landmarks at the
+expected x positions, (h) `freq=2` produces two peak-white columns
+with a matching trough between them, (i) `angle=45` breaks both
+axis-symmetry invariants, (j) `amplitude=2` clamps and renders
+byte-identical to `amplitude=1`, (k) alpha is opaque on every pixel,
+plus a single-frame URI roundtrip in `tests/source_uri.rs` confirming
+`generate://grating?w=4&h=4&freq=0&phase=0&amplitude=1` returns one
+4×4 RGBA frame of all-white pixels (64 bytes) and an entry in
+`tests/filter_zero_input.rs` confirming `image.grating` is a
+zero-input one-output filter. Pure first-principles maths;
+cos-of-linear-phase is textbook Fourier analysis with no external
+reference required. Reaches the URI path (`generate://grating?…`),
+the `grating:` shorthand prefix (with the trailing tail used verbatim
+as the query string), and the `image.grating` filter through the
+existing registration.
 
 Round 16 (2026-06-05): synth catalogue gained `shepard` — a Shepard tone,
 the classical octave-circular-pitch construct described in Roger

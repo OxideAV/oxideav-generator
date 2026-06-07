@@ -8,6 +8,45 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Image catalogue gained `grating` — sinusoidal grating, the canonical
+  single-tone spatial-frequency probe from Fourier image analysis.
+  Every pixel is set to
+  `0.5 + 0.5 · amplitude · cos(2π · (f_x · x + f_y · y) + phase_radians)`
+  with the spatial frequency vector derived from `freq=` (cycles across
+  the image width) and `angle=` (degrees clockwise from the +x axis):
+  `f_x = freq · cos(θ) / w`, `f_y = freq · sin(θ) / w`. Phase shift is
+  controlled by `phase=` in degrees; `amplitude=` clamps to `[0, 1]`
+  (0 → flat mid-grey, 1 → reaches full white and full black on the
+  peaks). Near-zero `cos(θ)` / `sin(θ)` (|x|<1e-6) snap to 0 so the
+  canonical horizontal (`angle=0`) and vertical (`angle=90`) gratings
+  are exactly axis-aligned without f32 round-off leakage on the
+  orthogonal axis. Output is greyscale RGBA8 with `R=G=B=byte`,
+  `A=255`, same rendering convention as the in-tree zone plate.
+  Distinct from `zoneplate` (radial chirp `cos(k·r²)` — every spatial
+  frequency simultaneously): the grating isolates one
+  `(magnitude, direction)` pair. Distinct from `pattern` (axis-aligned
+  step / checker): the grating is C∞-smooth, the pattern is piecewise-
+  constant. Eleven unit tests cover (a) dimensions match the query,
+  (b) `amplitude=0` collapses to flat mid-grey, (c) `freq=0 phase=0`
+  is flat peak white, (d) `freq=0 phase=180` is flat black,
+  (e) horizontal grating (`angle=0`) is constant down each column,
+  (f) vertical grating (`angle=90`) is constant across each row,
+  (g) `freq=1` on a 16-wide image hits the cos(0)=1 / cos(π)=-1 /
+  cos(π/2)=0 landmarks, (h) `freq=2` produces two white peaks with a
+  matching trough, (i) `angle=45` breaks both axis symmetries,
+  (j) `amplitude=2` clamps and renders byte-identical to
+  `amplitude=1`, (k) alpha is opaque, plus a single-frame URI
+  roundtrip in `tests/source_uri.rs` confirming
+  `generate://grating?w=4&h=4&freq=0&phase=0&amplitude=1` returns one
+  4×4 RGBA frame of all-white pixels (64 bytes) and a
+  `tests/filter_zero_input.rs` entry confirming `image.grating` is a
+  zero-input one-output filter. Reaches the URI path
+  (`generate://grating?…`), the `grating:` shorthand prefix (with the
+  trailing tail used verbatim as the query string), and the
+  `image.grating` filter through the existing registration. Pure
+  first-principles maths; the cos-of-linear-phase grating is textbook
+  Fourier analysis.
+
 - Audio synth gained `shepard` — a Shepard tone, the classical
   octave-circular-pitch construct described in Roger Shepard's 1964
   *Journal of the Acoustical Society of America* paper "Circularity in
