@@ -278,6 +278,48 @@ fn synth_fm_returns_audio_frames() {
 }
 
 #[test]
+fn synth_vibrato_returns_audio_frames_with_correct_sample_count() {
+    // 0.05 s × 8000 Hz = 400 mono samples × S16 LE = 800 bytes. The
+    // single emitted AudioFrame must report 400 samples on its `samples`
+    // count + carry exactly the expected byte length on its one data
+    // plane. Single-frame URI → drain → frame-shape roundtrip — the same
+    // shape probe used for every other in-tree synth type. The carrier
+    // is a sine at 440 Hz with the default ±0.5 % vibrato depth at 5 Hz.
+    let reg = registry();
+    let mut src = open_frames(&reg, "generate://synth?type=vibrato&duration=0.05");
+    let p = src.params();
+    assert_eq!(p.media_type, MediaType::Audio);
+    assert_eq!(p.codec_id.as_str(), "pcm_s16le");
+    assert_eq!(p.sample_rate, Some(8000));
+    assert_eq!(p.channels, Some(1));
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 1);
+    let Frame::Audio(a) = &frames[0] else {
+        panic!("expected audio frame for vibrato");
+    };
+    assert_eq!(a.samples, 400);
+    assert_eq!(a.data.len(), 1);
+    assert_eq!(a.data[0].len(), 800);
+    // The synthesised samples must stay inside the S16 amplitude bound
+    // implied by amplitude=0.8 (the global default) — vibrato passes
+    // the carrier's `amplitude` through unchanged because the phase
+    // reshuffling cannot push the oscillator outside its own image.
+    let samples: Vec<i16> = a.data[0]
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let peak = samples
+        .iter()
+        .map(|&s| s.unsigned_abs() as i32)
+        .max()
+        .unwrap();
+    // amplitude 0.8 × 32767 ≈ 26214; allow ≤ 27000 the same generous
+    // headroom the shepard probe uses (the actual peak is a sine
+    // amplitude bound, well clear of the assertion).
+    assert!(peak <= 27000, "vibrato peak {peak} exceeds 0.8 bound");
+}
+
+#[test]
 fn synth_shepard_returns_audio_frames_with_correct_sample_count() {
     // 0.05 s × 8000 Hz = 400 mono samples × S16 LE = 800 bytes. The
     // single emitted AudioFrame must report 400 samples on its `samples`

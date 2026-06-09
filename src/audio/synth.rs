@@ -234,6 +234,59 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
             let depth = q_f64(query, "depth", 0.5)?.clamp(0.0, 1.0) as f32;
             tremolo(wave, freq, lfo, depth, sample_rate, frame_count, amplitude)?
         }
+        "vibrato" | "vib" => {
+            // Sub-audio frequency modulation on top of an arbitrary
+            // carrier wave — the canonical musical vibrato effect, a
+            // sister to `tremolo`. The distinguishing properties are
+            // dual to tremolo's, modulating frequency instead of
+            // amplitude:
+            //   * The instantaneous frequency is the bipolar curve
+            //     `f(t) = freq · (1 + depth · cos(2π · lfo · t))`,
+            //     so `depth` is the FRACTIONAL frequency deviation
+            //     (default 0.005 = ±0.5 %, a textbook "natural
+            //     vibrato" width for sung vowels; classical string
+            //     vibrato sits closer to ±2 %).
+            //   * The closed-form phase comes from integrating the
+            //     instantaneous frequency: at LFO frequency `f_l`,
+            //     `phase(t) = 2π·freq·t
+            //                 + (depth · freq / f_l) · sin(2π·f_l·t)`,
+            //     so the modulation index in the FM sense is exactly
+            //     `depth · freq / f_l` (e.g. 440 Hz carrier × 0.005
+            //     depth × 5 Hz LFO ⇒ index = 0.44 radians).
+            //   * `lfo = 0` collapses to `phase(t) = 2π·freq·t`, the
+            //     unmodulated carrier (the algebraic
+            //     `lim_{f_l → 0} sin(2π·f_l·t) / f_l = 2π·t` cancels
+            //     against the `1 / f_l` weight to leave a constant DC
+            //     phase shift that gets absorbed into the carrier's
+            //     starting phase). We special-case lfo=0 to skip the
+            //     divide rather than letting f32 division by zero
+            //     leak through.
+            //   * Carrier `wave` selects sine | square | triangle |
+            //     sawtooth, exactly the four band-limited oscillators
+            //     `tremolo` accepts, so vibrato is a strict
+            //     phase-domain analogue of tremolo's amplitude-domain
+            //     story.
+            //
+            // Distinct from `fm`: `fm` is full audio-rate frequency
+            // modulation with an unbounded modulation index parameter
+            // (default 5 radians) producing rich Bessel-sideband
+            // timbres at carrier-to-modulator ratios in the audio
+            // band; vibrato fixes the LFO in the sub-audio band
+            // (default 5 Hz, the same "natural" speed as tremolo) and
+            // exposes the fractional frequency deviation directly so
+            // a musician can dial in ±0.5 % / ±2 % independent of
+            // the chosen pitch.
+            //
+            // Mathematical reference is John Backus, *The Acoustical
+            // Foundations of Music*, W. W. Norton & Company, 1969,
+            // ch. 8 "Vibrato" — a public academic monograph on
+            // musical acoustics.
+            let wave = q_str(query, "wave", "sine");
+            let freq = q_f64(query, "freq", 440.0)? as f32;
+            let lfo = q_f64(query, "lfo", 5.0)? as f32;
+            let depth = q_f64(query, "depth", 0.005)?.clamp(0.0, 1.0) as f32;
+            vibrato(wave, freq, lfo, depth, sample_rate, frame_count, amplitude)?
+        }
         "dtmf" => {
             // Touch-tone keypad: each key is the sum of one low-group and
             // one high-group sine (ITU-T Q.23 / Q.24 DTMF layout).
@@ -357,7 +410,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         "silence" => vec![0.0; frame_count],
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|tremolo|ringmod|dtmf|adsr|formant|shepard|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|tremolo|vibrato|ringmod|dtmf|adsr|formant|shepard|multitone|noise|silence)"
             )));
         }
     };
@@ -839,6 +892,140 @@ pub fn tremolo(
             // sign flip.
             let env = (1.0 - d) + half_d * (1.0 + (TAU * lfo_hz * t).cos());
             s * env
+        })
+        .collect();
+    Ok(out)
+}
+
+/// Sub-audio frequency modulation on an arbitrary carrier wave —
+/// classical musical "vibrato" effect, the phase-domain sister of
+/// [`tremolo`].
+///
+/// The instantaneous frequency traces a cosine around the carrier
+/// frequency,
+///
+/// ```text
+/// f_inst(t) = freq · (1 + depth · cos(2π · lfo_hz · t))
+/// ```
+///
+/// so `depth` is the FRACTIONAL frequency deviation (e.g. `0.005`
+/// = ±0.5 %, a textbook "natural" sung-vowel vibrato width; classical
+/// string vibrato sits closer to ±2 %). Integrating the instantaneous
+/// frequency gives the closed-form phase
+///
+/// ```text
+/// φ(t) = 2π · freq · t
+///      + (depth · freq / lfo_hz) · sin(2π · lfo_hz · t).
+/// ```
+///
+/// The modulation index in the FM sense is `β = depth · freq / lfo_hz`
+/// (e.g. 440 Hz × 0.005 / 5 Hz ⇒ β ≈ 0.44 rad), so the spectrum is a
+/// Bessel-function ladder centred on `freq` with sidebands at
+/// `freq ± k · lfo_hz` for integer k. Because `lfo_hz` is sub-audio,
+/// the sidebands cluster within a few Hz of the carrier and register
+/// perceptually as a pitch sweep rather than a new timbre — that is
+/// the vibrato percept.
+///
+/// `lfo_hz = 0` collapses the modulation algebraically: the cosine
+/// freezes at 1, the instantaneous frequency reduces to
+/// `freq · (1 + depth)` ≡ constant, and the phase becomes
+/// `2π · freq · (1 + depth) · t`. The implementation special-cases
+/// this exactly (skipping the `depth / lfo_hz` divide) so f32 division
+/// by zero does not leak through.
+///
+/// Distinct from [`fm`]: `fm` exposes an unbounded modulation index
+/// `index` (default 5 rad) and runs at audio-rate carrier-to-modulator
+/// ratios so it sweeps out rich classical-FM timbres
+/// (sin(2π·fc·t + index·sin(2π·fm·t)) with `fm` in the audio band).
+/// Vibrato fixes `lfo_hz` in the sub-audio band (default 5 Hz, the
+/// same "natural speed" as tremolo) and parameterises the fractional
+/// frequency deviation `depth` directly so a musician can dial in a
+/// ±0.5 % or ±2 % spread independent of the chosen pitch.
+///
+/// Carrier `wave` selects from the same band-limited oscillator set
+/// [`tremolo`] accepts (`sine` / `square` / `triangle` / `sawtooth`
+/// or `saw`). Square / triangle / sawtooth derive from instantaneous
+/// fractional phase ∈ [0, 1), so the closed-form phase is mapped to
+/// a normalised phase coordinate `φ(t) / TAU mod 1.0` and the carrier
+/// generator is evaluated on that coordinate.
+///
+/// Output is bounded by `amplitude` for every carrier (the carrier
+/// generators themselves are bounded by their `amplitude` argument).
+///
+/// Returns `Err` on unknown `wave` (same condition as [`tremolo`]).
+///
+/// Mathematical reference: John Backus, *The Acoustical Foundations
+/// of Music*, W. W. Norton, 1969 — ch. 8 "Vibrato" treats the effect
+/// as periodic frequency modulation of a carrier oscillator.
+pub fn vibrato(
+    wave: &str,
+    freq: f32,
+    lfo_hz: f32,
+    depth: f32,
+    sample_rate: u32,
+    n: usize,
+    amplitude: f32,
+) -> Result<Vec<f32>> {
+    // Validate the wave selector up front against the same set as
+    // tremolo so callers see a consistent error surface.
+    match wave {
+        "sine" | "square" | "triangle" | "sawtooth" | "saw" => {}
+        other => {
+            return Err(Error::invalid(format!(
+                "synth: vibrato wave {other:?} (expected sine|square|triangle|sawtooth)"
+            )));
+        }
+    }
+    let d = depth.clamp(0.0, 1.0);
+    let dt = 1.0 / sample_rate as f32;
+    // β = d · freq / lfo when lfo > 0 (modulation index in radians);
+    // when lfo == 0 we use the algebraic limit `f_const = freq · (1 + d)`
+    // so the carrier just plays back at a fixed shifted frequency.
+    let lfo_active = lfo_hz.abs() > 0.0;
+    let beta = if lfo_active { d * freq / lfo_hz } else { 0.0 };
+    let f_const = freq * (1.0 + d);
+    let out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 * dt;
+            // Closed-form integrated phase, normalised to [0, 1) for
+            // the non-sine carriers' phase-domain rendering.
+            let phi = if lfo_active {
+                TAU * freq * t + beta * (TAU * lfo_hz * t).sin()
+            } else {
+                TAU * f_const * t
+            };
+            match wave {
+                "sine" => amplitude * phi.sin(),
+                "square" => {
+                    // φ ∈ [0, TAU): first half-period positive, second half negative.
+                    let cycle = phi * (1.0 / TAU);
+                    let frac = cycle - cycle.floor();
+                    if frac < 0.5 {
+                        amplitude
+                    } else {
+                        -amplitude
+                    }
+                }
+                "triangle" => {
+                    let cycle = phi * (1.0 / TAU);
+                    let frac = cycle - cycle.floor();
+                    let v = if frac < 0.25 {
+                        frac * 4.0
+                    } else if frac < 0.75 {
+                        2.0 - frac * 4.0
+                    } else {
+                        frac * 4.0 - 4.0
+                    };
+                    amplitude * v
+                }
+                _ => {
+                    // sawtooth | saw — already pinned by the up-front
+                    // validation, so the match is total.
+                    let cycle = phi * (1.0 / TAU);
+                    let frac = cycle - cycle.floor();
+                    amplitude * (2.0 * frac - 1.0)
+                }
+            }
         })
         .collect();
     Ok(out)
@@ -2908,6 +3095,259 @@ mod tests {
         assert!(differ(&s, &q) > 0.1, "sine vs square must diverge");
         assert!(differ(&q, &t) > 0.1, "square vs triangle must diverge");
         assert!(differ(&t, &w) > 0.05, "triangle vs sawtooth must diverge");
+    }
+
+    // ───── vibrato ─────
+
+    #[test]
+    fn vibrato_depth_zero_is_pure_carrier() {
+        // depth=0 zeroes the modulation index, so the phase reduces to
+        // 2π·freq·t — exactly the unmodulated sine. The result must
+        // equal `sine(freq, …)` sample-for-sample to f32 quantisation.
+        // This is the "generaliser-not-replacement" property: vibrato
+        // at depth 0 is the carrier untouched.
+        let n = 2048;
+        let sr = 8000;
+        let freq = 440.0_f32;
+        let amp = 0.8_f32;
+        let got = vibrato("sine", freq, 5.0, 0.0, sr, n, amp).unwrap();
+        let want = sine(freq, sr, n, amp);
+        let max_err = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_err < 1e-4, "max err at depth=0: {max_err}");
+    }
+
+    #[test]
+    fn vibrato_bounded_by_amplitude() {
+        // Every carrier oscillator already produces samples bounded by
+        // its `amplitude` argument; the phase reshuffling cannot push
+        // an oscillator outside its own image. Verify on a high-depth,
+        // fast-LFO configuration with a square carrier (the worst case
+        // because square already sits at the amplitude rail every
+        // sample).
+        let amp = 0.8_f32;
+        let buf = vibrato("square", 220.0, 7.0, 0.5, 44100, 4096, amp).unwrap();
+        for (i, s) in buf.iter().enumerate() {
+            assert!(
+                s.abs() <= amp + 1e-6,
+                "vibrato sample {i} = {s} exceeded amp {amp}"
+            );
+        }
+    }
+
+    #[test]
+    fn vibrato_lfo_zero_collapses_to_shifted_carrier() {
+        // lfo_hz=0 freezes the cosine at 1 ⇒ instantaneous frequency
+        // is constant at freq · (1 + depth) ⇒ output is a sine at
+        // that shifted frequency. Cross-check against an unmodulated
+        // sine at freq · (1 + depth).
+        let n = 1024;
+        let sr = 8000;
+        let f = 440.0_f32;
+        let d = 0.05_f32;
+        let amp = 0.8_f32;
+        let got = vibrato("sine", f, 0.0, d, sr, n, amp).unwrap();
+        let want = sine(f * (1.0 + d), sr, n, amp);
+        let max_err = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_err < 1e-4,
+            "lfo=0 should be the shifted-pitch carrier: max_err={max_err}"
+        );
+    }
+
+    #[test]
+    fn vibrato_modulates_phase_over_time() {
+        // The pitch sweep is bipolar around `freq`, so at the LFO peak
+        // the instantaneous frequency is freq · (1 + depth) and at the
+        // trough it is freq · (1 − depth). Detect that by zero-crossing
+        // counting in two short windows symmetric around the peak and
+        // trough of the LFO cosine: the high-frequency window must
+        // contain measurably more crossings than the low-frequency one.
+        // A pure constant-frequency carrier would have identical
+        // crossing counts in symmetric windows.
+        let sr = 16000_u32;
+        let f0 = 1000.0_f32;
+        let lfo_hz = 1.0_f32;
+        let depth = 0.5_f32; // exaggerated for a clear signal-to-noise ratio.
+        let n = sr as usize; // 1 s — one full LFO cycle.
+        let buf = vibrato("sine", f0, lfo_hz, depth, sr, n, 1.0).unwrap();
+        // LFO peak (cos = +1) at t = 0; LFO trough (cos = −1) at t = 0.5.
+        // Take 50 ms windows centred on each, avoiding the edges.
+        let win_len = sr as usize / 20; // 50 ms = 800 samples
+        let peak_start = win_len; // start at t = 50 ms (LFO still near +1)
+        let trough_start = (n / 2) - (win_len / 2);
+        let zcr = |slice: &[f32]| -> usize {
+            slice
+                .windows(2)
+                .filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0))
+                .count()
+        };
+        let z_peak = zcr(&buf[peak_start..peak_start + win_len]);
+        let z_trough = zcr(&buf[trough_start..trough_start + win_len]);
+        // Peak frequency ≈ 1500 Hz ⇒ ≈ 150 crossings in 50 ms;
+        // trough ≈ 500 Hz ⇒ ≈ 50 crossings. A factor of ~3 is the
+        // headline signal; require ≥ 1.5× margin so the assertion
+        // survives f32 / windowing noise.
+        assert!(
+            z_peak > z_trough * 3 / 2,
+            "LFO peak ({z_peak} crossings) must dominate trough ({z_trough}) by ≥ 1.5×"
+        );
+    }
+
+    #[test]
+    fn vibrato_dispatcher_alias_and_default_bounds() {
+        // `type=vib` is the documented short alias; both names must
+        // produce identical buffers. Defaults: wave=sine, freq=440,
+        // lfo=5, depth=0.005 (±0.5 % deviation) → bounded output.
+        let a = render(&map(&[("type", "vibrato"), ("duration", "0.05")])).unwrap();
+        let b = render(&map(&[("type", "vib"), ("duration", "0.05")])).unwrap();
+        assert_eq!(a.samples, b.samples);
+        assert_eq!(a.samples.len(), 400); // 8000 × 0.05.
+        for s in &a.samples {
+            assert!(s.abs() <= 0.8 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn vibrato_dispatcher_clamps_depth() {
+        // depth=2 is out of [0, 1] and clamps to 1.0 at the wrapper;
+        // verify by comparing to an explicit depth=1 render.
+        let clamped = render(&map(&[
+            ("type", "vibrato"),
+            ("duration", "0.05"),
+            ("depth", "2"),
+        ]))
+        .unwrap();
+        let explicit = render(&map(&[
+            ("type", "vibrato"),
+            ("duration", "0.05"),
+            ("depth", "1"),
+        ]))
+        .unwrap();
+        assert_eq!(clamped.samples.len(), explicit.samples.len());
+        for (i, (&a, &b)) in clamped.samples.iter().zip(&explicit.samples).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "sample {i}: clamped {a}, explicit {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn vibrato_unknown_wave_errors() {
+        // The wave selector mirrors `tremolo`'s carrier list. An invalid
+        // value must surface a clear error mentioning `vibrato`.
+        let err = render(&map(&[
+            ("type", "vibrato"),
+            ("wave", "ocarina"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("vibrato"), "missing 'vibrato' in {msg}");
+        assert!(msg.contains("ocarina"), "missing offending wave in {msg}");
+    }
+
+    #[test]
+    fn vibrato_listed_in_unknown_type_help() {
+        // The dispatcher's "expected …" hint must advertise vibrato.
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        assert!(format!("{err}").contains("vibrato"));
+    }
+
+    #[test]
+    fn vibrato_carrier_wave_selectable() {
+        // All four carrier waves must accept the vibrato wrapper and
+        // produce distinguishable output. Carrier-shape parity with
+        // tremolo is the same family-level property — vibrato is the
+        // phase-domain sister of the amplitude-domain story.
+        let sr = 8000;
+        let n = 1024;
+        let amp = 0.8_f32;
+        let f = 220.0_f32;
+        let d = 0.05_f32;
+        let lfo = 5.0_f32;
+        let s = vibrato("sine", f, lfo, d, sr, n, amp).unwrap();
+        let q = vibrato("square", f, lfo, d, sr, n, amp).unwrap();
+        let t = vibrato("triangle", f, lfo, d, sr, n, amp).unwrap();
+        let w = vibrato("sawtooth", f, lfo, d, sr, n, amp).unwrap();
+        let saw_alias = vibrato("saw", f, lfo, d, sr, n, amp).unwrap();
+        assert_eq!(w, saw_alias, "`saw` alias must match `sawtooth`");
+        let differ = |a: &[f32], b: &[f32]| {
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(differ(&s, &q) > 0.1, "sine vs square must diverge");
+        assert!(differ(&q, &t) > 0.1, "square vs triangle must diverge");
+        assert!(differ(&t, &w) > 0.05, "triangle vs sawtooth must diverge");
+    }
+
+    #[test]
+    fn vibrato_distinguishes_from_tremolo_and_fm() {
+        // Family separation: vibrato vs tremolo (the amplitude-domain
+        // sister at the same sub-audio rate) and vibrato vs fm (the
+        // audio-rate phase modulator). Same carrier + LFO + depth: the
+        // three families must produce three different buffers.
+        let sr = 8000;
+        let n = 4000;
+        let f = 440.0_f32;
+        let lfo = 5.0_f32;
+        let depth = 0.1_f32;
+        let amp = 0.8_f32;
+        let vib = vibrato("sine", f, lfo, depth, sr, n, amp).unwrap();
+        let trem = tremolo("sine", f, lfo, depth, sr, n, amp).unwrap();
+        let fm_buf = fm(f, lfo, depth, sr, n, amp);
+        let max_diff = |a: &[f32], b: &[f32]| -> f32 {
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(
+            max_diff(&vib, &trem) > 0.1,
+            "vibrato (FM) and tremolo (AM) must diverge"
+        );
+        assert!(
+            max_diff(&vib, &fm_buf) > 0.1,
+            "vibrato (closed-form integrated phase, fractional-depth) must diverge from `fm` (audio-rate index-in-radians)"
+        );
+    }
+
+    #[test]
+    fn vibrato_modulation_index_matches_closed_form() {
+        // The closed-form modulation index in the FM sense is
+        // β = depth · freq / lfo (radians). Probe by comparing vibrato
+        // against `fm` with the carrier set to `freq`, the modulator
+        // set to `lfo`, and index set to the closed-form β: the two
+        // buffers must agree sample-for-sample (both implement the
+        // same `sin(2π·fc·t + β·sin(2π·fm·t))`).
+        let sr = 8000;
+        let n = 1024;
+        let freq = 440.0_f32;
+        let lfo = 5.0_f32;
+        let depth = 0.005_f32;
+        let amp = 0.8_f32;
+        let beta = depth * freq / lfo;
+        let vib = vibrato("sine", freq, lfo, depth, sr, n, amp).unwrap();
+        let fm_equiv = fm(freq, lfo, beta, sr, n, amp);
+        let max_err = vib
+            .iter()
+            .zip(&fm_equiv)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_err < 1e-4,
+            "vibrato closed-form must match fm at index = depth·freq/lfo: max_err={max_err}"
+        );
     }
 
     // ──────────────────────── Shepard tone ────────────────────────

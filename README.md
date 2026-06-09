@@ -5,6 +5,7 @@ audio synth (sine / square / triangle / sawtooth / supersaw
 (detuned-sawtooth stack) / pulse-width-modulated rectangle /
 Karplus-Strong pluck / linear + exponential chirp / FM / AM /
 sub-audio tremolo (unipolar-cosine LFO over any carrier) /
+sub-audio vibrato (closed-form integrated-phase FM over any carrier) /
 ring modulation / DTMF touch-tones / ADSR-enveloped tone / Klatt-style
 two-formant vowel synthesizer / Shepard tone (octave-spaced
 Gaussian-weighted sine stack) / multi-tone /
@@ -54,6 +55,7 @@ generate://synth?type=chirp&shape=exp&f0=20&f1=20000&duration=4
 generate://synth?type=fm&carrier=440&modulator=110&index=5&duration=2
 generate://synth?type=am&carrier=440&modulator=60&index=0.5&duration=2
 generate://synth?type=tremolo&wave=sine&freq=440&lfo=5&depth=0.7&duration=2
+generate://synth?type=vibrato&wave=sine&freq=440&lfo=5&depth=0.005&duration=2
 generate://synth?type=ringmod&f1=440&f2=60&duration=2
 generate://synth?type=dtmf&digits=0123456789&tone=0.1&gap=0.05
 generate://synth?type=adsr&wave=sine&freq=440&attack=0.02&decay=0.1&sustain=0.7&release=0.2&duration=2
@@ -124,6 +126,59 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 18 (2026-06-09): synth catalogue gained `vibrato` (alias `vib`) —
+classical musical vibrato, the phase-domain sister of the in-tree
+`tremolo`. Instantaneous frequency traces a cosine around the carrier,
+`f_inst(t) = freq · (1 + depth · cos(2π · lfo · t))`, so `depth=` is the
+FRACTIONAL frequency deviation (default `0.005` = ±0.5 %, a textbook
+"natural" sung-vowel vibrato width; classical string vibrato sits closer
+to ±2 %). Integrating analytically gives the closed-form phase
+`φ(t) = 2π·freq·t + (depth·freq / lfo)·sin(2π·lfo·t)`, so the modulation
+index in the FM sense is exactly `β = depth · freq / lfo` radians (e.g.
+440 Hz × 0.005 / 5 Hz ⇒ β ≈ 0.44 rad). `lfo=0` collapses the modulation
+algebraically — the cosine freezes at 1, the instantaneous frequency
+becomes the constant `freq · (1 + depth)`, and the implementation
+special-cases the divide so f32 division-by-zero never leaks through.
+Carrier `wave=` selects `sine | square | triangle | sawtooth` exactly
+like `tremolo`, with the non-sine carriers evaluated on the fractional
+phase coordinate `φ(t) / TAU mod 1.0` so the closed-form phase reshuffles
+band-limited oscillators without introducing aliasing artefacts beyond
+what each oscillator already exhibits. Distinct from in-tree `fm`: `fm`
+takes a modulation index in radians (default 5) and an audio-rate
+modulator, producing rich Bessel-sideband classical-FM timbres; vibrato
+fixes the LFO sub-audio (default 5 Hz, the same "natural speed" as
+tremolo) and exposes the fractional frequency deviation directly so a
+musician can dial in ±0.5 % or ±2 % independent of pitch. Distinct from
+`tremolo`: tremolo modulates amplitude on a static phase, vibrato
+modulates phase on a static amplitude — same family, dual domain.
+Eleven new unit tests cover (a) `depth=0` collapsing sample-for-sample
+to the unmodulated carrier (proves the generaliser-not-replacement
+property), (b) high-depth/fast-LFO bound-respect on a square carrier
+(the worst-case amplitude-rail probe), (c) `lfo=0` collapsing to a
+pitch-shifted carrier (`freq · (1 + depth)`), (d) zero-crossing-rate
+asymmetry between the LFO peak window (≈ 1500 Hz density) and trough
+window (≈ 500 Hz density) at `f=1 kHz, depth=0.5, lfo=1 Hz` — the
+canonical "the LFO is actually steering the pitch" probe, (e)
+`type=vibrato` / `type=vib` alias equivalence, (f) dispatcher `depth=2`
+silently clamping to `depth=1`, (g) unknown carrier `wave=` surfacing a
+`vibrato`-tagged error, (h) the dispatcher's "unknown type" hint
+advertising `vibrato`, (i) carrier-wave shape parity (all four
+oscillators rendering distinguishable output, `saw` aliasing to
+`sawtooth`), (j) family separation — vibrato, tremolo, and `fm` produce
+three different buffers at matched parameters, (k) the closed-form
+modulation-index identity — `vibrato("sine", freq, lfo, depth, …)` is
+sample-for-sample equal to `fm(freq, lfo, depth·freq/lfo, …)` because
+both implement the same `sin(2π·fc·t + β·sin(2π·fm·t))`. Plus a
+single-frame URI roundtrip in `tests/source_uri.rs` confirms
+`generate://synth?type=vibrato&duration=0.05` returns one `AudioFrame`
+of 400 mono S16 LE samples (800 bytes) inside the amplitude=0.8 S16
+bound. Pure first-principles DSP; sole reference is John Backus,
+*The Acoustical Foundations of Music* (W. W. Norton, 1969 ch. 8
+"Vibrato"), a public academic monograph on musical acoustics. Reaches
+the URI path (`generate://synth?type=vibrato&…`), the `synth:` shorthand
+(via the existing comma-arg parser), and the `audio.synth` filter
+through the existing dispatcher (no new registration).
 
 Round 17 (2026-06-07): image catalogue gained `grating` — a sinusoidal
 grating, the canonical single-tone spatial-frequency probe from Fourier
