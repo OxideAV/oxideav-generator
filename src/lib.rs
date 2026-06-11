@@ -13,7 +13,8 @@
 //!    `audio.synth`, `image.xc`, `image.gradient`, `image.pattern`,
 //!    `image.grating`, `image.fractal`, `image.plasma`, `image.noise`,
 //!    `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
-//!    `video.gradient_animate`, `video.zoneplate` names. Register them
+//!    `video.gradient_animate`, `video.zoneplate`, `video.scroll`
+//!    names. Register them
 //!    via [`register_filters`] on a
 //!    [`RuntimeContext`](oxideav_core::RuntimeContext).
 //!
@@ -55,7 +56,9 @@
 //!   the classical broadcast-engineering test signal), `smptebars`
 //!   (SMPTE 75% colour bars), `fractal_zoom` (animated Mandelbrot zoom),
 //!   `gradient_animate` (hue-rotating gradient), `zoneplate` (radial
-//!   `cos(k·r²)` chirp — spatial-frequency probe).
+//!   `cos(k·r²)` chirp — spatial-frequency probe), `scroll`
+//!   (constant-velocity toroidal translation of a base pattern —
+//!   bit-exact ground-truth motion-estimation probe).
 
 #![allow(clippy::too_many_arguments)]
 
@@ -124,6 +127,7 @@ mod tests {
             "video.fractal_zoom",
             "video.gradient_animate",
             "video.zoneplate",
+            "video.scroll",
         ] {
             assert!(
                 ctx.filters.contains(name),

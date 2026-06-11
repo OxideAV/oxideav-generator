@@ -25,7 +25,9 @@ use crate::audio::synth as audio_synth;
 #[cfg(feature = "label")]
 use crate::image::label;
 use crate::image::{fractal, gradient, grating, noise, pattern, plasma, xc, Rgba8Image};
-use crate::video::{fractal_zoom, gradient_animate, smptebars, testsrc, zoneplate, FrameSeq};
+use crate::video::{
+    fractal_zoom, gradient_animate, scroll, smptebars, testsrc, zoneplate, FrameSeq,
+};
 
 /// Register the `generate` URI scheme as a [`FrameSource`] driver.
 pub fn register_source(registry: &mut SourceRegistry) {
@@ -92,6 +94,9 @@ pub fn open_generate_frames(uri: &str) -> Result<Box<dyn FrameSource>> {
             gradient_animate::render(&parsed.query)?,
         ))),
         "zoneplate" => Ok(Box::new(VideoFrameSourceImpl::new(zoneplate::render(
+            &parsed.query,
+        )?))),
+        "scroll" => Ok(Box::new(VideoFrameSourceImpl::new(scroll::render(
             &parsed.query,
         )?))),
 
@@ -407,6 +412,19 @@ pub fn q_u32(q: &BTreeMap<String, String>, key: &str, default: u32) -> Result<u3
         Some(s) => s.parse::<u32>().map_err(|_| {
             Error::invalid(format!(
                 "query parameter `{key}` must be a non-negative integer, got {s:?}"
+            ))
+        }),
+    }
+}
+
+/// Convenience: `query.get("k")` parsed as an `i32` (sign allowed),
+/// or `default`.
+pub fn q_i32(q: &BTreeMap<String, String>, key: &str, default: i32) -> Result<i32> {
+    match q.get(key) {
+        None => Ok(default),
+        Some(s) => s.parse::<i32>().map_err(|_| {
+            Error::invalid(format!(
+                "query parameter `{key}` must be an integer, got {s:?}"
             ))
         }),
     }

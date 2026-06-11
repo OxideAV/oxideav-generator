@@ -85,6 +85,30 @@ fn video_gradient_animate_emits_frames() {
 }
 
 #[test]
+fn video_scroll_emits_n_frames_with_zero_input_ports() {
+    let ctx = make_ctx();
+    let params = serde_json::json!({
+        "w": 16, "h": 8,
+        "size": 4,
+        "vx": 2, "vy": 1,
+        "duration": 0.3, "fps": 10
+    });
+    let filter = ctx.filters.make("video.scroll", &params, &[]).unwrap();
+    assert!(filter.input_ports().is_empty());
+    assert_eq!(filter.output_ports().len(), 1);
+
+    let mut filter = ctx.filters.make("video.scroll", &params, &[]).unwrap();
+    let mut sink = CollectCtx { frames: vec![] };
+    filter.flush(&mut sink).unwrap();
+    assert_eq!(sink.frames.len(), 3);
+    // Non-zero velocity ⇒ consecutive frames differ.
+    let (Frame::Video(a), Frame::Video(b)) = (&sink.frames[0], &sink.frames[1]) else {
+        panic!("expected video frames");
+    };
+    assert_ne!(a.planes[0].data, b.planes[0].data);
+}
+
+#[test]
 fn image_filters_have_zero_input_ports() {
     let ctx = make_ctx();
     for name in [

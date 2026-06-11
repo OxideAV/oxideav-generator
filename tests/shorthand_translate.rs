@@ -31,6 +31,11 @@ fn all_shorthand_translations_round_trip() {
         ("testsrc:", "generate://testsrc"),
         ("smptebars:", "generate://smptebars"),
         ("zoneplate:", "generate://zoneplate"),
+        ("scroll:", "generate://scroll"),
+        (
+            "scroll:pattern=plasma&vx=2&vy=-1",
+            "generate://scroll?pattern=plasma&vx=2&vy=-1",
+        ),
         ("noise:perlin", "generate://noise?type=perlin"),
     ];
     for (input, want) in cases {

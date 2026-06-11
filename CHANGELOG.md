@@ -8,6 +8,35 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Video catalogue gained `scroll` — a constant-velocity scrolling
+  pattern, the canonical motion-estimation ground-truth probe. A base
+  frame is rendered once by an in-tree image generator
+  (`pattern=checkerboard|hstripes|vstripes` + aliases / `grating` /
+  `plasma`; remaining query keys are forwarded unchanged so the base
+  frame is bit-identical to the matching still-image generator's
+  output), then frame `n` is exactly the base frame translated by
+  `(n·vx, n·vy)` pixels with toroidal wrap-around addressing:
+  `frame_n(x, y) = base((x − n·vx) mod w, (y − n·vy) mod h)`.
+  `vx` / `vy` are signed integer pixels-per-frame (defaults 1 / 0;
+  parsed by a new shared `q_i32` query helper), so the true motion
+  field is globally constant and known exactly — every output pixel is
+  a bit-exact copy of a base-frame pixel (one wrapped row lookup plus
+  two contiguous byte copies per output row; no resampling, no
+  interpolation). Useful for validating codec motion search (the
+  estimated vector field should be uniformly `(vx, vy)`), temporal
+  prediction (frame `n` predicted from frame `n−1` with the true
+  vector is residual-free), and wrap-period logic (when `vx` divides
+  `w` the sequence is periodic with period `w / vx` frames). Eleven
+  unit tests cover the per-pixel ground-truth translation property on
+  a plasma base, static `vx=vy=0`, torus velocity algebra
+  (`vx=−2 ≡ vx=14` and `vx=20 ≡ vx=4` on a 16-wide frame), full-period
+  wrap back to the base frame, frame-0 bit-identity with direct
+  `pattern` / `grating` renders, vy-only row shifting with seam wrap,
+  `duration × fps` frame counts, unknown-pattern and fractional-velocity
+  rejection; plus a URI roundtrip, a zero-input `video.scroll` filter
+  test, and `scroll:` shorthand rows. Exposed on all three surfaces:
+  `generate://scroll?…`, the `scroll:` shorthand (bare + query
+  passthrough), and the `video.scroll` filter.
 - Audio synth gained `vibrato` (alias `vib`) — classical musical vibrato,
   the phase-domain sister of the in-tree `tremolo`. Instantaneous
   frequency traces a cosine around the carrier,

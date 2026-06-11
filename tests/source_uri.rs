@@ -241,6 +241,34 @@ fn video_zoneplate_returns_frames_variant() {
 }
 
 #[test]
+fn video_scroll_returns_translated_frames() {
+    // Constant-velocity scroll of an 8×8 checkerboard (cell=4) at
+    // vx=4/frame: after one frame the board has shifted by exactly one
+    // cell, so pixel (0, 0) flips colour between frame 0 and frame 1.
+    // 0.2 s × 10 fps = 2 frames.
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://scroll?w=8&h=8&size=4&vx=4&vy=0&duration=0.2&fps=10",
+    );
+    let p = src.params();
+    assert_eq!(p.media_type, MediaType::Video);
+    assert_eq!(p.width, Some(8));
+    assert_eq!(p.height, Some(8));
+    assert_eq!(p.pixel_format, Some(PixelFormat::Rgba));
+    assert_eq!(p.frame_rate, Some(Rational::new(10, 1)));
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 2);
+    let (Frame::Video(v0), Frame::Video(v1)) = (&frames[0], &frames[1]) else {
+        panic!("expected two video frames");
+    };
+    // Frame 0: top-left cell is color1 (black). Frame 1: the white
+    // cell has scrolled in.
+    assert_eq!(&v0.planes[0].data[0..4], &[0, 0, 0, 255]);
+    assert_eq!(&v1.planes[0].data[0..4], &[255, 255, 255, 255]);
+}
+
+#[test]
 fn synth_chirp_returns_audio_frames() {
     // 0.05 s sweep from 200 → 800 Hz, linear. 8000 × 0.05 = 400 mono
     // samples × 2 bytes = 800 bytes of S16 LE PCM.

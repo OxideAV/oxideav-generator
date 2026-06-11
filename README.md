@@ -17,7 +17,8 @@ single-frequency cos at a chosen orientation), procedural imagery
 noise, value / lattice noise, Worley cellular noise), and video
 (classical broadcast `testsrc`, SMPTE colour bars, animated Mandelbrot
 zoom, hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency
-probe).
+probe, constant-velocity toroidal `scroll` — bit-exact ground-truth
+motion-estimation probe).
 
 Two integration shapes are exposed:
 
@@ -86,6 +87,8 @@ generate://noise?type=worley&dist=manhattan&k=2&points=2&w=640&h=480&scale=48&se
 generate://testsrc?w=640&h=480&duration=5&fps=30
 generate://smptebars?w=640&h=480&duration=5&fps=30
 generate://zoneplate?w=640&h=480&duration=5&fps=30&k=0.05&motion=temporal
+generate://scroll?pattern=checkerboard&size=32&vx=2&vy=1&w=640&h=480&duration=5&fps=30
+generate://scroll?pattern=plasma&seed=7&vx=-3&w=640&h=480&duration=5&fps=30
 ```
 
 ## CLI shorthands (convert verb only)
@@ -109,6 +112,7 @@ registry. Recognised prefixes:
 | `smptebars:`           | `generate://smptebars`                                       |
 | `zoneplate:`           | `generate://zoneplate`                                       |
 | `grating:`             | `generate://grating`                                         |
+| `scroll:`              | `generate://scroll`                                          |
 | `noise:perlin`         | `generate://noise?type=perlin`                               |
 
 `probe` / `transcode` / `remux` / `run` accept the canonical
@@ -126,6 +130,49 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 19 (2026-06-12): video catalogue gained `scroll` — a
+constant-velocity scrolling pattern, the canonical motion-estimation
+ground-truth probe. A base frame is rendered once by one of the in-tree
+image generators (`pattern=checkerboard|hstripes|vstripes` + aliases /
+`grating` / `plasma`; remaining query keys are forwarded unchanged, so
+the base frame is bit-identical to the matching still-image generator's
+output), then frame `n` is exactly the base frame translated by
+`(n·vx, n·vy)` pixels with toroidal wrap-around addressing:
+`frame_n(x, y) = base((x − n·vx) mod w, (y − n·vy) mod h)`. `vx` / `vy`
+are signed integer pixels-per-frame (defaults 1 / 0; a new shared
+`q_i32` query helper joins `q_u32`/`q_f64`/`q_str` to parse them), so
+the true motion field is globally constant and known exactly — every
+output pixel is a bit-exact copy of a base-frame pixel (the
+implementation is one wrapped row lookup plus two contiguous byte
+copies per output row; no resampling, no interpolation, no arithmetic
+on pixel values). That makes the sequence ideal for validating codec
+motion search (the estimated vector field should be uniformly
+`(vx, vy)`), temporal prediction (frame `n` predicted from frame `n−1`
+with the true vector is residual-free), and wrap-period logic (when
+`vx` divides `w` the sequence is periodic with period `w / vx` frames).
+Eleven new unit tests cover (a) the headline ground-truth property —
+every pixel of every frame of a plasma-based scroll (rich aperiodic
+content, so off-by-ones cannot hide behind pattern periodicity) equals
+the toroidally back-translated base pixel, (b) `vx=vy=0` is
+frame-identical static video, (c) torus velocity algebra — `vx=−2` on a
+16-wide frame renders bit-identical to `vx=14`, (d) `vx=20` ≡ `vx=4`
+(velocity wraps mod frame size), (e) full-period wrap — `vx=4`, `w=16`
+returns to the base frame at frame 4 while intermediate frames differ,
+(f) frame 0 is bit-identical to a direct `pattern::render` checkerboard
+with the same forwarded `size`/`color1`/`color2`, (g) the same identity
+for a `grating` base with forwarded `freq`/`angle`, (h) vy-only scroll
+shifts rows down with the seam row wrapping, (i) frame count follows
+`duration × fps`, (j) unknown `pattern=` erroring with the offending
+name, (k) fractional `vx=1.5` rejected (integer velocities only — the
+bit-exactness contract). Plus a URI roundtrip in `tests/source_uri.rs`
+(8×8 checkerboard, cell 4, `vx=4`: pixel (0,0) flips black → white
+after exactly one frame), a zero-input `video.scroll` filter test in
+`tests/filter_zero_input.rs`, and `scroll:` shorthand rows (bare +
+query passthrough). Pure first-principles construction — translation on
+the torus `Z_w × Z_h` is the only operation involved; no external
+reference needed. Reaches the URI path (`generate://scroll?…`), the
+`scroll:` shorthand, and the `video.scroll` filter.
 
 Round 18 (2026-06-09): synth catalogue gained `vibrato` (alias `vib`) —
 classical musical vibrato, the phase-domain sister of the in-tree

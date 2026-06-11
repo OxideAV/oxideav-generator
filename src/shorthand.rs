@@ -19,6 +19,7 @@
 //! | `smptebars:`             | `generate://smptebars`                          |
 //! | `zoneplate:`             | `generate://zoneplate`                          |
 //! | `grating:`               | `generate://grating`                            |
+//! | `scroll:`                | `generate://scroll`                             |
 //! | `noise:perlin`           | `generate://noise?type=perlin`                  |
 //! | `label:Hello world`      | `generate://label?text=Hello%20world`           |
 //!
@@ -100,6 +101,12 @@ fn try_translate(input: &str) -> Option<String> {
             return Some("generate://grating".to_string());
         }
         return Some(format!("generate://grating?{rest}"));
+    }
+    if let Some(rest) = input.strip_prefix("scroll:") {
+        if rest.is_empty() {
+            return Some("generate://scroll".to_string());
+        }
+        return Some(format!("generate://scroll?{rest}"));
     }
     if let Some(rest) = input.strip_prefix("noise:") {
         if rest.is_empty() {
@@ -317,6 +324,19 @@ mod tests {
         assert_eq!(
             translate("grating:freq=8&angle=45"),
             "generate://grating?freq=8&angle=45"
+        );
+    }
+
+    #[test]
+    fn scroll_bare() {
+        assert_eq!(translate("scroll:"), "generate://scroll");
+    }
+
+    #[test]
+    fn scroll_with_query() {
+        assert_eq!(
+            translate("scroll:pattern=plasma&vx=2&vy=-1"),
+            "generate://scroll?pattern=plasma&vx=2&vy=-1"
         );
     }
 
