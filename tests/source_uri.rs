@@ -269,6 +269,40 @@ fn video_scroll_returns_translated_frames() {
 }
 
 #[test]
+fn video_colorwheel_returns_frames_variant() {
+    // Rotating colour wheel at 9×9 (odd-sized so the centre is an
+    // integer pixel). With the default mid lightness and zero
+    // saturation at r=0, the centre pixel is a pure grey (127 on every
+    // channel). 0.3 s × 10 fps = 3 frames; with spin>0 frame 0 and the
+    // last frame differ.
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://colorwheel?w=9&h=9&duration=0.3&fps=10&spin=120",
+    );
+    let p = src.params();
+    assert_eq!(p.media_type, MediaType::Video);
+    assert_eq!(p.width, Some(9));
+    assert_eq!(p.height, Some(9));
+    assert_eq!(p.pixel_format, Some(PixelFormat::Rgba));
+    assert_eq!(p.frame_rate, Some(Rational::new(10, 1)));
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 3);
+    let (Frame::Video(v0), Frame::Video(vlast)) = (&frames[0], frames.last().unwrap()) else {
+        panic!("expected video frames");
+    };
+    // Centre pixel (x=4, y=4) is achromatic grey.
+    let stride = v0.planes[0].stride;
+    let centre = 4 * stride + 4 * 4;
+    let c = &v0.planes[0].data[centre..centre + 4];
+    assert_eq!(c[0], c[1]);
+    assert_eq!(c[1], c[2]);
+    assert_eq!(c[3], 255);
+    // The wheel rotates: the full frame buffer changes over the run.
+    assert_ne!(v0.planes[0].data, vlast.planes[0].data);
+}
+
+#[test]
 fn synth_chirp_returns_audio_frames() {
     // 0.05 s sweep from 200 → 800 Hz, linear. 8000 × 0.05 = 400 mono
     // samples × 2 bytes = 800 bytes of S16 LE PCM.

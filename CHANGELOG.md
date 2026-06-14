@@ -8,6 +8,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Video catalogue gained `colorwheel` — a rotating polar hue wheel.
+  For each pixel the vector from the frame centre `(dx, dy)` is
+  resolved into polar coordinates: hue is the `atan2(dy, dx)` angle in
+  `[0, 360)` degrees plus a per-frame additive phase `spin · t` (so the
+  wheel rotates rigidly at `spin` degrees per second; `t` = frame
+  presentation time), and saturation is the radius
+  `sqrt(dx² + dy²)` normalised by `r_max` (half the smaller dimension),
+  clamped to `[0, 1]` and scaled by the `saturation` rim parameter.
+  Lightness is a fixed parameter (default 0.5). The centre is
+  achromatic and the rim fully saturated; one frame sweeps the whole
+  hue circle (a chroma probe) and the rotation is a smooth
+  angular-motion probe. Reuses the in-tree `palette::hsl_to_rgb`
+  converter. Query params: `w`/`h`, `duration`, `fps`, `spin` (deg/s,
+  signed), `lightness`, `saturation`. Eight unit tests (frame count,
+  achromatic centre, lightness-0 black, saturation-0 grey,
+  opposite-angle distinct hues, `spin=0` static, `spin>0` motion,
+  determinism) plus a URI roundtrip, a zero-input `video.colorwheel`
+  filter test, and `colorwheel:` shorthand rows. Exposed on all three
+  surfaces: `generate://colorwheel?…`, the `colorwheel:` shorthand, and
+  the `video.colorwheel` filter.
 - Video catalogue gained `scroll` — a constant-velocity scrolling
   pattern, the canonical motion-estimation ground-truth probe. A base
   frame is rendered once by an in-tree image generator

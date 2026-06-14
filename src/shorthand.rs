@@ -20,6 +20,7 @@
 //! | `zoneplate:`             | `generate://zoneplate`                          |
 //! | `grating:`               | `generate://grating`                            |
 //! | `scroll:`                | `generate://scroll`                             |
+//! | `colorwheel:`            | `generate://colorwheel`                         |
 //! | `noise:perlin`           | `generate://noise?type=perlin`                  |
 //! | `label:Hello world`      | `generate://label?text=Hello%20world`           |
 //!
@@ -107,6 +108,12 @@ fn try_translate(input: &str) -> Option<String> {
             return Some("generate://scroll".to_string());
         }
         return Some(format!("generate://scroll?{rest}"));
+    }
+    if let Some(rest) = input.strip_prefix("colorwheel:") {
+        if rest.is_empty() {
+            return Some("generate://colorwheel".to_string());
+        }
+        return Some(format!("generate://colorwheel?{rest}"));
     }
     if let Some(rest) = input.strip_prefix("noise:") {
         if rest.is_empty() {
@@ -337,6 +344,19 @@ mod tests {
         assert_eq!(
             translate("scroll:pattern=plasma&vx=2&vy=-1"),
             "generate://scroll?pattern=plasma&vx=2&vy=-1"
+        );
+    }
+
+    #[test]
+    fn colorwheel_bare() {
+        assert_eq!(translate("colorwheel:"), "generate://colorwheel");
+    }
+
+    #[test]
+    fn colorwheel_with_query() {
+        assert_eq!(
+            translate("colorwheel:w=128&h=128&spin=90"),
+            "generate://colorwheel?w=128&h=128&spin=90"
         );
     }
 

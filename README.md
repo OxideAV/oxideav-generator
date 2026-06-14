@@ -18,7 +18,8 @@ noise, value / lattice noise, Worley cellular noise), and video
 (classical broadcast `testsrc`, SMPTE colour bars, animated Mandelbrot
 zoom, hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency
 probe, constant-velocity toroidal `scroll` — bit-exact ground-truth
-motion-estimation probe).
+motion-estimation probe, rotating `colorwheel` — polar hue from the
+`atan2` angle with radial saturation, a chroma + angular-motion probe).
 
 Two integration shapes are exposed:
 
@@ -89,6 +90,8 @@ generate://smptebars?w=640&h=480&duration=5&fps=30
 generate://zoneplate?w=640&h=480&duration=5&fps=30&k=0.05&motion=temporal
 generate://scroll?pattern=checkerboard&size=32&vx=2&vy=1&w=640&h=480&duration=5&fps=30
 generate://scroll?pattern=plasma&seed=7&vx=-3&w=640&h=480&duration=5&fps=30
+generate://colorwheel?w=640&h=480&duration=5&fps=30&spin=60
+generate://colorwheel?spin=-90&lightness=0.5&saturation=1&w=640&h=480
 ```
 
 ## CLI shorthands (convert verb only)
@@ -113,6 +116,7 @@ registry. Recognised prefixes:
 | `zoneplate:`           | `generate://zoneplate`                                       |
 | `grating:`             | `generate://grating`                                         |
 | `scroll:`              | `generate://scroll`                                          |
+| `colorwheel:`          | `generate://colorwheel`                                      |
 | `noise:perlin`         | `generate://noise?type=perlin`                               |
 
 `probe` / `transcode` / `remux` / `run` accept the canonical
@@ -130,6 +134,34 @@ oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.x
 ```
 
 ## Status
+
+Round 20 (2026-06-14): video catalogue gained `colorwheel` — a
+rotating polar hue wheel. For each pixel the vector from the frame
+centre `(dx, dy)` is resolved into polar coordinates: the hue is the
+`atan2(dy, dx)` angle (in `[0, 360)` degrees, with a per-frame additive
+phase `spin · t` so the wheel rotates rigidly at `spin` degrees per
+second, `t` = the frame's presentation time), and the saturation is the
+radius `sqrt(dx² + dy²)` normalised by `r_max` (half the smaller
+dimension) and clamped to `[0, 1]`, then scaled by the `saturation`
+parameter (rim value). Lightness is a fixed parameter (default 0.5).
+The centre is therefore achromatic and the rim fully saturated; one
+frame sweeps the entire hue circle, exercising the chroma path the way
+the zone plate exercises the luma-frequency path, while the rotation is
+a smooth angular-motion probe (each frame a pure rotation of the prior
+one with an analytically known offset). Reuses the in-tree
+`palette::hsl_to_rgb` HSL→RGB converter — no new colour-space code.
+Eight new unit tests cover (a) frame count follows `duration × fps`,
+(b) the centre pixel is achromatic grey at mid lightness (`r==g==b`,
+=127), (c) lightness 0 → all-black, (d) saturation 0 → all-grey,
+(e) opposite-angle pixels render distinct hues, (f) `spin=0` is
+frame-identical static video, (g) `spin>0` changes frames across the
+run, (h) determinism (two renders byte-identical). Plus a URI roundtrip
+in `tests/source_uri.rs`, a zero-input `video.colorwheel` filter test in
+`tests/filter_zero_input.rs`, and `colorwheel:` shorthand rows (bare +
+query passthrough). Pure first-principles construction — polar
+decomposition plus the existing HSL conversion; no external reference
+needed. Reaches the URI path (`generate://colorwheel?…`), the
+`colorwheel:` shorthand, and the `video.colorwheel` filter.
 
 Round 19 (2026-06-12): video catalogue gained `scroll` — a
 constant-velocity scrolling pattern, the canonical motion-estimation
