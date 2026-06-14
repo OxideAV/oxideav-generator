@@ -6,6 +6,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/OxideAV/oxideav-generator/compare/v0.1.4...v0.1.5) - 2026-06-14
+
+### Other
+
+- add rotating colorwheel video pattern (polar hue + radial saturation)
+- round 19: video `scroll` — constant-velocity toroidal translation, bit-exact motion-estimation ground-truth probe
+- round 18: synth `vibrato` — sub-audio frequency modulation on any carrier
+- round 17: image `grating` — sinusoidal single-frequency cos test pattern
+- round 16: synth `shepard` — Shepard tone (octave-spaced Gaussian-weighted sine stack)
+- round 15: synth `tremolo` — sub-audio unipolar-cosine envelope on any carrier
+- round 14: image noise gained value / lattice mode
+- round 13: image noise gained worley / cellular mode
+- round 12: synth `supersaw` — detuned-sawtooth stack
+
 ### Added
 
 - Video catalogue gained `colorwheel` — a rotating polar hue wheel.
