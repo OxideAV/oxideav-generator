@@ -1,5 +1,7 @@
 # oxideav-generator
 
+[![CI](https://github.com/OxideAV/oxideav-generator/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-generator/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-generator.svg)](https://crates.io/crates/oxideav-generator) [![docs.rs](https://docs.rs/oxideav-generator/badge.svg)](https://docs.rs/oxideav-generator) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust synthetic media generator for the oxideav framework. Provides
 audio synth (sine / square / triangle / sawtooth / supersaw
 (detuned-sawtooth stack) / pulse-width-modulated rectangle /
