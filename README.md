@@ -183,7 +183,11 @@ plus `#RGB`, `#RGBA`, `#RRGGBB`, and `#RRGGBBAA`.
 ## Determinism
 
 All randomness is seeded — every generator that takes a `seed=` query
-parameter is bit-deterministic across builds. Defaults: `seed=42` for
+parameter is bit-deterministic across builds. The whole catalogue is
+under a byte-determinism contract enforced by
+`tests/catalogue_determinism.rs`: every generator kind (28 synth
+types, 15 image forms, 11 video forms), opened twice with identical
+parameters, must produce byte-identical audio PCM / video plane data. Defaults: `seed=42` for
 plasma / Perlin / simplex / value, `seed=0x12345678` for white / pink
 / brown noise. Perlin, simplex, and value all draw from the same
 seeded 512-entry permutation table, so a given `seed=` is reproducible

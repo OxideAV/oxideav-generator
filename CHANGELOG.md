@@ -8,6 +8,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- New cross-cutting test suite `tests/catalogue_determinism.rs`
+  pinning the crate-wide byte-determinism contract: every generator
+  kind in the URI catalogue (28 audio synth configurations, 15 image
+  forms, 11 video forms, plus the feature-gated `label`), opened
+  twice with identical parameters, must produce byte-identical audio
+  PCM / video plane bytes and at least one non-empty frame. The URI
+  lists double as catalogue-rot detection — a kind the dispatcher
+  knows but the list misses (or vice versa) shows up at review time,
+  and any generator that grows hidden nondeterminism (an unseeded
+  RNG, time-dependent state, pointer-keyed iteration) fails
+  immediately.
 - Image catalogue gained `ramp` — a per-channel gradient ramp
   quantised to a configurable `bits=1..=8` depth, in exact integer
   arithmetic: `level(p) = ⌊p · 2^bits / len⌋` then
