@@ -44,7 +44,10 @@
 //!   carrier) / ringmod (carrier-suppressed product of two sines) /
 //!   dtmf (telephone touch-tones) /
 //!   formant (Klatt-style two-formant vowel synthesizer) / multitone
-//!   (sum of sines) / white-pink-brown-blue-violet noise / silence.
+//!   (sum of sines) / white-pink-brown-blue-violet noise / silence /
+//!   dc (constant `s[n] = level` offset signal) / impulse (unipolar
+//!   impulse train — `width` samples at `+amplitude` every `period`
+//!   samples, drift-free integer arithmetic).
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,
 //!   checkerboard / horizontal / vertical / diagonal patterns,
 //!   sinusoidal grating (single-frequency cos at a chosen orientation).

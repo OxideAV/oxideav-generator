@@ -11,7 +11,8 @@ sub-audio vibrato (closed-form integrated-phase FM over any carrier) /
 ring modulation / DTMF touch-tones / ADSR-enveloped tone / Klatt-style
 two-formant vowel synthesizer / Shepard tone (octave-spaced
 Gaussian-weighted sine stack) / multi-tone /
-white-pink-brown-blue-violet noise / silence),
+white-pink-brown-blue-violet noise / silence / DC (constant offset) /
+impulse train (drift-free integer period)),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes, sinusoidal grating —
 single-frequency cos at a chosen orientation), procedural imagery
@@ -72,6 +73,9 @@ generate://synth?type=multitone&freqs=440,1000,2200&duration=1
 generate://synth?type=noise&color=pink&duration=10
 generate://synth?type=noise&color=blue&seed=42&duration=10
 generate://synth?type=noise&color=violet&seed=42&duration=10
+generate://synth?type=dc&level=-0.25&duration=1
+generate://synth?type=impulse&freq=4&duration=2
+generate://synth?type=impulse&period=100&width=3&duration=1
 
 generate://xc?color=red&w=640&h=480
 generate://xc?color=%23ff0000      # #ff0000 percent-encoded

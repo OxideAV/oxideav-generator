@@ -408,9 +408,43 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
             }
         }
         "silence" => vec![0.0; frame_count],
+        "dc" => {
+            // Constant (direct-current) signal: s[n] = level for every
+            // n. `level` is signed and clamped to [-1, 1]; when absent
+            // it defaults to the (unsigned) `amplitude` knob, so
+            // `type=dc` alone produces the same peak the oscillators
+            // would. The classic offset / clipping / silence-detector
+            // probe: zero AC energy, all the power at 0 Hz.
+            let level = q_f64(query, "level", amplitude as f64)?.clamp(-1.0, 1.0) as f32;
+            dc(level, frame_count)
+        }
+        "impulse" | "impulses" | "click" => {
+            // Unipolar impulse train: `width` samples at +amplitude
+            // every `period` samples, first impulse at n = 0. Explicit
+            // `period=` (samples) wins; otherwise the period is derived
+            // from `freq=` (impulses per second, default 1 Hz) as
+            // round(rate / freq). The spectral counterpart of `dc` — a
+            // Dirac comb whose discrete spectrum has equal-magnitude
+            // lines at every multiple of rate/period; ideal for
+            // impulse-response capture and codec pre-echo probing.
+            let period = match query.get("period") {
+                Some(_) => q_u32(query, "period", 1)?.max(1) as usize,
+                None => {
+                    let freq = q_f64(query, "freq", 1.0)?;
+                    if freq <= 0.0 {
+                        return Err(Error::invalid(format!(
+                            "synth: impulse freq must be > 0, got {freq}"
+                        )));
+                    }
+                    ((sample_rate as f64 / freq).round() as usize).max(1)
+                }
+            };
+            let width = (q_u32(query, "width", 1)?.max(1) as usize).min(period);
+            impulse_train(period, width, frame_count, amplitude)
+        }
         other => {
             return Err(Error::invalid(format!(
-                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|tremolo|vibrato|ringmod|dtmf|adsr|formant|shepard|multitone|noise|silence)"
+                "synth: unknown type {other:?} (expected sine|square|triangle|sawtooth|supersaw|pwm|pluck|chirp|fm|am|tremolo|vibrato|ringmod|dtmf|adsr|formant|shepard|multitone|noise|silence|dc|impulse)"
             )));
         }
     };
@@ -1562,6 +1596,42 @@ pub fn noise_violet(n: usize, amplitude: f32, seed: u32) -> Vec<f32> {
         prev1 = white;
     }
     out
+}
+
+/// Constant (DC) signal: `s[n] = level` for every `n`, with `level`
+/// clamped to `[-1, 1]`.
+///
+/// Exactness contract: every sample is bit-identical to the clamped
+/// `level` — there is no accumulation, rounding, or time dependence,
+/// so downstream S16 conversion yields a single repeated PCM code.
+pub fn dc(level: f32, n: usize) -> Vec<f32> {
+    vec![level.clamp(-1.0, 1.0); n]
+}
+
+/// Unipolar impulse train: `width` samples at `+amplitude` every
+/// `period` samples, first impulse at `n = 0`.
+///
+/// Closed form:
+///
+/// ```text
+/// s[n] = amplitude   if n mod period < width
+///        0           otherwise
+/// ```
+///
+/// `period` and `width` are exact sample counts (no float phase
+/// accumulator), so the train never drifts: the k-th impulse starts at
+/// sample `k · period` exactly, for any length. A `width` of 1 is the
+/// discrete Dirac comb; its magnitude spectrum has equal-height lines
+/// at every multiple of `rate / period` Hz.
+///
+/// `period` must be ≥ 1 and `width` is clamped to `1..=period` by the
+/// dispatcher.
+pub fn impulse_train(period: usize, width: usize, n: usize, amplitude: f32) -> Vec<f32> {
+    let period = period.max(1);
+    let width = width.clamp(1, period);
+    (0..n)
+        .map(|i| if i % period < width { amplitude } else { 0.0 })
+        .collect()
 }
 
 /// Tiny Lcg so we don't need a `rand` dep.
@@ -3549,5 +3619,147 @@ mod tests {
                 "default centre vs explicit log-midpoint: sample {i} differs {a} vs {b}"
             );
         }
+    }
+
+    // ───── dc ─────
+
+    #[test]
+    fn dc_every_sample_equals_level_exactly() {
+        let buf = dc(0.25, 64);
+        assert_eq!(buf.len(), 64);
+        for &s in &buf {
+            assert_eq!(s, 0.25, "dc must be bit-exact per sample");
+        }
+    }
+
+    #[test]
+    fn dc_negative_level_passes_through() {
+        let buf = dc(-0.5, 8);
+        for &s in &buf {
+            assert_eq!(s, -0.5);
+        }
+    }
+
+    #[test]
+    fn dc_level_clamped_to_unit_range() {
+        assert_eq!(dc(3.0, 1)[0], 1.0);
+        assert_eq!(dc(-3.0, 1)[0], -1.0);
+    }
+
+    #[test]
+    fn dc_dispatcher_level_param() {
+        // 8000 Hz × 0.01 s = 80 samples, every one exactly −0.25.
+        let buf = render(&map(&[
+            ("type", "dc"),
+            ("level", "-0.25"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.samples.len(), 80);
+        for &s in &buf.samples {
+            assert_eq!(s, -0.25);
+        }
+    }
+
+    #[test]
+    fn dc_dispatcher_defaults_to_amplitude() {
+        // No level= → level = amplitude (0.8 default).
+        let buf = render(&map(&[("type", "dc"), ("duration", "0.001")])).unwrap();
+        for &s in &buf.samples {
+            assert_eq!(s, 0.8);
+        }
+    }
+
+    // ───── impulse train ─────
+
+    #[test]
+    fn impulse_train_closed_form() {
+        // s[n] = amp iff n mod period < width.
+        let buf = impulse_train(100, 1, 400, 0.8);
+        assert_eq!(buf.len(), 400);
+        for (n, &s) in buf.iter().enumerate() {
+            let want = if n % 100 == 0 { 0.8 } else { 0.0 };
+            assert_eq!(s, want, "sample {n}");
+        }
+    }
+
+    #[test]
+    fn impulse_train_width_widens_each_impulse() {
+        let buf = impulse_train(8, 3, 32, 1.0);
+        for (n, &s) in buf.iter().enumerate() {
+            let want = if n % 8 < 3 { 1.0 } else { 0.0 };
+            assert_eq!(s, want, "sample {n}");
+        }
+    }
+
+    #[test]
+    fn impulse_train_width_clamped_to_period() {
+        // width ≥ period degenerates to a DC-at-amplitude signal.
+        let buf = impulse_train(4, 99, 16, 0.5);
+        for &s in &buf {
+            assert_eq!(s, 0.5);
+        }
+    }
+
+    #[test]
+    fn impulse_dispatcher_period_wins_over_freq() {
+        // Explicit period=50 must override freq=80 (which would give
+        // period 100 at 8000 Hz).
+        let buf = render(&map(&[
+            ("type", "impulse"),
+            ("period", "50"),
+            ("freq", "80"),
+            ("duration", "0.025"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.samples.len(), 200);
+        for (n, &s) in buf.samples.iter().enumerate() {
+            let want = if n % 50 == 0 { 0.8 } else { 0.0 };
+            assert_eq!(s, want, "sample {n}");
+        }
+    }
+
+    #[test]
+    fn impulse_dispatcher_freq_derives_period() {
+        // freq=80 at rate 8000 → period = 100 samples exactly.
+        let buf = render(&map(&[
+            ("type", "impulse"),
+            ("freq", "80"),
+            ("duration", "0.05"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.samples.len(), 400);
+        let ones: Vec<usize> = buf
+            .samples
+            .iter()
+            .enumerate()
+            .filter(|(_, &s)| s != 0.0)
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(ones, vec![0, 100, 200, 300]);
+    }
+
+    #[test]
+    fn impulse_dispatcher_default_is_one_hertz() {
+        // Default freq = 1 Hz → period = rate → exactly one impulse in
+        // a 1-second render, at n = 0.
+        let buf = render(&map(&[("type", "impulse"), ("duration", "1")])).unwrap();
+        assert_eq!(buf.samples.len(), 8000);
+        assert_eq!(buf.samples[0], 0.8);
+        assert!(buf.samples[1..].iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn impulse_dispatcher_nonpositive_freq_errors() {
+        assert!(render(&map(&[("type", "impulse"), ("freq", "0")])).is_err());
+        assert!(render(&map(&[("type", "impulse"), ("freq", "-3")])).is_err());
+    }
+
+    #[test]
+    fn dc_and_impulse_listed_in_unknown_type_help() {
+        let err = render(&map(&[("type", "definitely-not-real")])).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("dc"), "{msg}");
+        assert!(msg.contains("impulse"), "{msg}");
     }
 }

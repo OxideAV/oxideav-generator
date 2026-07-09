@@ -8,6 +8,24 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Audio catalogue gained `dc` and `impulse`. `type=dc` renders a
+  constant signal `s[n] = level` (signed, clamped to `[-1, 1]`,
+  defaulting to the `amplitude` knob) — the classic offset / clipping /
+  silence-detector probe with all its power at 0 Hz. `type=impulse`
+  (aliases `impulses` / `click`) renders a unipolar impulse train:
+  `width` samples at `+amplitude` every `period` samples, first
+  impulse at `n = 0`, closed form
+  `s[n] = amplitude · [n mod period < width]`. `period=` is an exact
+  integer sample count (explicit `period=` wins; otherwise derived
+  from `freq=` impulses-per-second, default 1 Hz, as
+  `round(rate / freq)`), so the train never accumulates float phase
+  drift — the k-th impulse starts at sample `k · period` for any
+  render length. `width` is clamped to `1..=period`; `width = period`
+  degenerates to DC at `+amplitude`, and `width = 1` is the discrete
+  Dirac comb with equal-magnitude spectral lines at every multiple of
+  `rate / period` Hz. Eleven unit tests pin the closed forms
+  (bit-exact per-sample equality, clamping, period-vs-freq precedence,
+  1 Hz default, non-positive-freq rejection, unknown-type help text).
 - Video catalogue gained `colorwheel` — a rotating polar hue wheel.
   For each pixel the vector from the frame centre `(dx, dy)` is
   resolved into polar coordinates: hue is the `atan2(dy, dx)` angle in
