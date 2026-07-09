@@ -24,6 +24,16 @@ serde_json = "1"
 oxideav-scribe = { version = "0.1", optional = true }
 oxideav-raster = { version = "0.1", optional = true }
 
+[dev-dependencies]
+# Frame-fill / sample-fill benches. Pinned to the same 0.5 line the
+# other OxideAV crates with benches (flac, tta, magicyuv, h264,
+# cinepak, pixfmt, g711, g7231) already track.
+criterion = "0.5"
+
+[[bench]]
+name = "framefill"
+harness = false
+
 [features]
 default = ["label"]
 label = ["dep:oxideav-scribe", "dep:oxideav-raster"]

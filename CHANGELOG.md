@@ -8,6 +8,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- New criterion bench suite `benches/framefill.rs` covering the
+  frame-fill / sample-fill hot paths: seven video generators (per
+  320×240-frame cost — colorwheel ~690 µs, zoneplate ~222 µs, testsrc
+  ~45 µs, snow mono/rgb ~18/27 µs, movingbox ~5.7 µs, scroll ~51 µs),
+  four image generators (perlin ~1.94 ms, checkerboard ~42 µs, ramp
+  ~43 µs, grating ~189 µs), and three audio synths (1 s @ 48 kHz —
+  sine ~101 µs, supersaw-7 ~2.22 ms, pink noise ~51 µs). All inputs
+  are synthesised in-bench with fixed parameters; no fixtures, no
+  I/O. `criterion = "0.5"` dev-dependency, matching the fleet's
+  pinned line.
 - New cross-cutting test suite `tests/catalogue_determinism.rs`
   pinning the crate-wide byte-determinism contract: every generator
   kind in the URI catalogue (28 audio synth configurations, 15 image

@@ -175,6 +175,28 @@ table — with no external media-encoding dependencies.
 
 See `CHANGELOG.md` for the per-release history.
 
+## Benchmarks
+
+`cargo bench --bench framefill` (criterion; no fixtures, all inputs
+synthesised in-bench). Apple-silicon reference numbers, per 320×240
+frame unless noted:
+
+| Bench                          | Time      |
+| ------------------------------ | --------- |
+| video colorwheel               | ~690 µs   |
+| video zoneplate                | ~222 µs   |
+| video testsrc                  | ~45 µs    |
+| video snow (mono / rgb)        | ~18 / 27 µs |
+| video movingbox                | ~5.7 µs   |
+| video scroll (checkerboard)    | ~51 µs    |
+| image perlin noise             | ~1.94 ms  |
+| image checkerboard             | ~42 µs    |
+| image ramp 8-bit               | ~43 µs    |
+| image grating                  | ~189 µs   |
+| audio sine, 1 s @ 48 kHz       | ~101 µs   |
+| audio supersaw-7, 1 s @ 48 kHz | ~2.22 ms  |
+| audio pink noise, 1 s @ 48 kHz | ~51 µs    |
+
 ## CSS colour parser
 
 Hand-rolled. Accepts a curated subset of the CSS/HTML4 named colours
