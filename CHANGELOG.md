@@ -8,6 +8,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Image catalogue gained `ramp` — a per-channel gradient ramp
+  quantised to a configurable `bits=1..=8` depth, in exact integer
+  arithmetic: `level(p) = ⌊p · 2^bits / len⌋` then
+  `value(p) = round(level · 255 / (2^bits − 1))`. Values are monotone
+  non-decreasing with exactly-known step positions; the first pixel is
+  always 0 and (for `len ≥ 2^bits`) the last always 255; at `bits=8`
+  with a 256-pixel span the ramp is the identity (`value(x) = x`).
+  `channel=gray` (default) writes the ramp to R=G=B; `channel=r|g|b`
+  isolates one channel with the others at 0, exposing per-channel
+  gamma / dithering / subsampling crosstalk. `direction=horizontal|
+  vertical`. Low bit depths produce deliberately banded ramps — the
+  reference input for banding-detection, dithering, and
+  bit-depth-conversion tests. Public `ramp::code_at(p, len, levels)`
+  exposes the closed form. Ten unit tests (bits=8/256-wide identity,
+  1-bit midpoint split, 2-bit exact codes 0/85/170/255, vertical
+  direction, channel isolation, monotonicity, exact level count +
+  endpoints, bits range error, unknown channel/direction errors,
+  determinism) plus a URI roundtrip with exact quantised codes, the
+  `image.ramp` zero-input filter row, and `ramp:` shorthand rows.
 - Video catalogue gained `snow` — seeded temporal noise where every
   pixel of every frame is a *stateless* counter-mode hash of
   `(seed, frame, x, y)` (an xorshift-multiply integer finalizer with

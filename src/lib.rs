@@ -12,6 +12,7 @@
 //!    [`StreamFilter`](oxideav_core::StreamFilter) factory under the
 //!    `audio.synth`, `image.xc`, `image.gradient`, `image.pattern`,
 //!    `image.grating`, `image.fractal`, `image.plasma`, `image.noise`,
+//!    `image.ramp`,
 //!    `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
 //!    `video.gradient_animate`, `video.zoneplate`, `video.scroll`,
 //!    `video.colorwheel`, `video.movingbox`, `video.snow`
@@ -54,7 +55,10 @@
 //!   probe).
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,
 //!   checkerboard / horizontal / vertical / diagonal patterns,
-//!   sinusoidal grating (single-frequency cos at a chosen orientation).
+//!   sinusoidal grating (single-frequency cos at a chosen orientation),
+//!   `ramp` (per-channel quantised gradient ramp at a configurable
+//!   `bits=1..=8` depth — exact integer level / code closed form, the
+//!   banding / dithering / bit-depth-conversion probe).
 //! - **Procedural images** — Mandelbrot + Julia fractals, plasma
 //!   (recursive midpoint displacement), Perlin + simplex gradient
 //!   noise, Worley cellular noise (`type=worley`, alias `cellular`;
@@ -140,6 +144,7 @@ mod tests {
             "image.fractal",
             "image.plasma",
             "image.noise",
+            "image.ramp",
             "video.testsrc",
             "video.smptebars",
             "video.fractal_zoom",

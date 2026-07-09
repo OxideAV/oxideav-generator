@@ -164,6 +164,28 @@ fn grating_default_returns_one_video_frame_with_unit_peak() {
     }
 }
 
+#[test]
+fn ramp_2bit_returns_exact_quantised_codes() {
+    // bits=2, w=8: levels 0,0,1,1,2,2,3,3 → codes 0,85,170,255 on all
+    // of R/G/B (channel=gray default), alpha 255.
+    let reg = registry();
+    let mut src = open_frames(&reg, "generate://ramp?w=8&h=1&bits=2");
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 1);
+    let Frame::Video(v) = &frames[0] else {
+        panic!();
+    };
+    let want = [0u8, 0, 85, 85, 170, 170, 255, 255];
+    for (x, &code) in want.iter().enumerate() {
+        let px = &v.planes[0].data[x * 4..x * 4 + 4];
+        assert_eq!(
+            px,
+            &[code, code, code, 255],
+            "column {x} must carry code {code}"
+        );
+    }
+}
+
 // ---------------------------- Video ----------------------------
 
 #[test]

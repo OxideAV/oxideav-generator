@@ -1,5 +1,5 @@
 //! Image generators (xc / gradient / pattern / fractal / plasma /
-//! noise).
+//! noise / ramp).
 //!
 //! Each generator returns RGBA8 row-major bytes via [`Rgba8Image`].
 //! Frames flow straight to the pipeline as
@@ -15,6 +15,7 @@ pub mod noise;
 pub mod palette;
 pub mod pattern;
 pub mod plasma;
+pub mod ramp;
 pub mod xc;
 
 /// Row-major RGBA8 image — 4 bytes per pixel, `width * height * 4`

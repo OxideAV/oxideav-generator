@@ -189,6 +189,7 @@ fn image_filters_have_zero_input_ports() {
         "image.fractal",
         "image.plasma",
         "image.noise",
+        "image.ramp",
     ] {
         let params = serde_json::json!({"w": 8, "h": 8});
         let filter = ctx.filters.make(name, &params, &[]).unwrap();

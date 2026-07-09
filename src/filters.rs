@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::audio::f32_sample_to_i16;
 use crate::audio::synth as audio_synth;
-use crate::image::{fractal, gradient, grating, noise, pattern, plasma, xc, Rgba8Image};
+use crate::image::{fractal, gradient, grating, noise, pattern, plasma, ramp, xc, Rgba8Image};
 use crate::video::{
     colorwheel, fractal_zoom, gradient_animate, movingbox, scroll, smptebars, snow, testsrc,
     zoneplate,
@@ -28,7 +28,7 @@ use crate::video::{
 /// Names mirror the URI catalogue:
 /// - `audio.synth`
 /// - `image.xc`, `image.gradient`, `image.pattern`,
-///   `image.fractal`, `image.plasma`, `image.noise`
+///   `image.fractal`, `image.plasma`, `image.noise`, `image.ramp`
 /// - `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
 ///   `video.gradient_animate`, `video.zoneplate`, `video.scroll`,
 ///   `video.colorwheel`, `video.movingbox`, `video.snow`
@@ -48,6 +48,8 @@ pub fn register_filters(ctx: &mut RuntimeContext) {
         .register("image.plasma", Box::new(make_image_plasma));
     ctx.filters
         .register("image.noise", Box::new(make_image_noise));
+    ctx.filters
+        .register("image.ramp", Box::new(make_image_ramp));
     ctx.filters
         .register("video.testsrc", Box::new(make_video_testsrc));
     ctx.filters
@@ -172,6 +174,9 @@ fn make_image_plasma(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn Str
 }
 fn make_image_noise(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
     image_filter(noise::render(&params_to_query(params))?)
+}
+fn make_image_ramp(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
+    image_filter(ramp::render(&params_to_query(params))?)
 }
 
 fn image_filter(img: Rgba8Image) -> Result<Box<dyn StreamFilter>> {
