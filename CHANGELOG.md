@@ -8,6 +8,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Wire-level PCM exactness tests at the `FrameSource` boundary: the
+  asymmetric f32 → S16 mapping (`x ≥ 0` scales by 32767 and
+  truncates; `x < 0` scales by 32768) is now pinned on the exact
+  bytes downstream codecs consume — `dc` at levels 1 / −1 / 0.5
+  produces 32767 / −32768 / 16383 on every sample, `impulse` at the
+  default amplitude produces exactly 26213 on impulse samples and 0
+  elsewhere, and quadrature stereo (`channels=2&chphase=90`)
+  interleaves `[ch0 s0, ch1 s0, …]` with sample 0 = (0, 26213).
 - New criterion bench suite `benches/framefill.rs` covering the
   frame-fill / sample-fill hot paths: seven video generators (per
   320×240-frame cost — colorwheel ~690 µs, zoneplate ~222 µs, testsrc

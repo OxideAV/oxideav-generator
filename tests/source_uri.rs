@@ -87,6 +87,74 @@ fn synth_sine_pcm_amplitude_within_tolerance() {
     assert!((25000..=27000).contains(&peak), "peak = {peak}");
 }
 
+#[test]
+fn synth_dc_and_impulse_pcm_wire_codes_pinned() {
+    // The f32 → S16 wire mapping is asymmetric (x ≥ 0 scales by 32767
+    // and truncates, x < 0 scales by 32768): dc level=1 → 32767
+    // everywhere, level=-1 → -32768, level=0.5 → ⌊0.5·32767⌋ = 16383.
+    // These are the exact bytes a downstream codec consumes, pinned at
+    // the FrameSource boundary rather than in f32 space.
+    let reg = registry();
+    for (level, want) in [("1", 32767i16), ("-1", -32768), ("0.5", 16383)] {
+        let mut src = open_frames(
+            &reg,
+            &format!("generate://synth?type=dc&level={level}&duration=0.005"),
+        );
+        let frames = drain(&mut *src).unwrap();
+        let Frame::Audio(a) = &frames[0] else {
+            panic!();
+        };
+        assert_eq!(a.samples, 40);
+        for (n, c) in a.data[0].chunks_exact(2).enumerate() {
+            let got = i16::from_le_bytes([c[0], c[1]]);
+            assert_eq!(got, want, "level={level}, sample {n}");
+        }
+    }
+
+    // Impulse train at amplitude 0.8: ⌊0.8·32767⌋ = 26213 on every
+    // impulse sample, exactly 0 elsewhere.
+    let mut src = open_frames(
+        &reg,
+        "generate://synth?type=impulse&period=10&duration=0.005",
+    );
+    let frames = drain(&mut *src).unwrap();
+    let Frame::Audio(a) = &frames[0] else {
+        panic!();
+    };
+    for (n, c) in a.data[0].chunks_exact(2).enumerate() {
+        let got = i16::from_le_bytes([c[0], c[1]]);
+        let want = if n % 10 == 0 { 26213 } else { 0 };
+        assert_eq!(got, want, "sample {n}");
+    }
+}
+
+#[test]
+fn synth_quadrature_stereo_pcm_wire_layout() {
+    // channels=2 & chphase=90: interleaved wire layout is
+    // [ch0 s0, ch1 s0, ch0 s1, ch1 s1, …]. At sample 0 the sine
+    // channel is sin(0) = 0 and the quadrature channel is
+    // ⌊0.8·cos(0)·32767⌋ = 26213.
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://synth?type=sine&freq=440&channels=2&chphase=90&duration=0.005",
+    );
+    let p = src.params();
+    assert_eq!(p.channels, Some(2));
+    let frames = drain(&mut *src).unwrap();
+    let Frame::Audio(a) = &frames[0] else {
+        panic!();
+    };
+    assert_eq!(a.samples, 40); // per channel
+    assert_eq!(a.data[0].len(), 40 * 2 * 2); // 2 ch × 2 bytes
+    let s: Vec<i16> = a.data[0]
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    assert_eq!(s[0], 0, "ch0 sample 0 = sin(0)");
+    assert_eq!(s[1], 26213, "ch1 sample 0 = 0.8·cos(0) on the wire");
+}
+
 // ---------------------------- Image ----------------------------
 
 #[test]
