@@ -6,6 +6,30 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/OxideAV/oxideav-generator/compare/v0.1.4...v0.1.5) - 2026-07-09
+
+### Other
+
+- pin the S16 PCM wire codes at the FrameSource boundary
+- criterion frame-fill / sample-fill suite (benches/framefill.rs)
+- catalogue-wide byte-determinism contract suite
+- add ramp — per-channel quantised gradient ramp at 1–8-bit depth
+- add snow — seeded stateless temporal noise (counter-mode hash)
+- add movingbox — local-motion probe with exactly-known integer MVs
+- sine gains phase= + per-channel chphase= offsets (quadrature stereo probe)
+- add dc + impulse-train generators — exact integer-period closed forms
+- add CI / crates.io / docs.rs / MIT-license badges
+- refresh to current status, drop per-round changelog cruft
+- add rotating colorwheel video pattern (polar hue + radial saturation)
+- round 19: video `scroll` — constant-velocity toroidal translation, bit-exact motion-estimation ground-truth probe
+- round 18: synth `vibrato` — sub-audio frequency modulation on any carrier
+- round 17: image `grating` — sinusoidal single-frequency cos test pattern
+- round 16: synth `shepard` — Shepard tone (octave-spaced Gaussian-weighted sine stack)
+- round 15: synth `tremolo` — sub-audio unipolar-cosine envelope on any carrier
+- round 14: image noise gained value / lattice mode
+- round 13: image noise gained worley / cellular mode
+- round 12: synth `supersaw` — detuned-sawtooth stack
+
 ### Added
 
 - Wire-level PCM exactness tests at the `FrameSource` boundary: the
