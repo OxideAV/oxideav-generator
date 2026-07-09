@@ -8,6 +8,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Video catalogue gained `snow` — seeded temporal noise where every
+  pixel of every frame is a *stateless* counter-mode hash of
+  `(seed, frame, x, y)` (an xorshift-multiply integer finalizer with
+  odd multipliers, documented word-for-word in the module docs and
+  pinned by tests that restate the constants independently). No
+  sequential PRNG stream exists, so any pixel is reproducible in
+  isolation, frames can be recomputed in any order, and two runs — or
+  two machines — produce byte-identical streams for the same `seed=`.
+  `mode=mono` (default) maps the hash's top byte to an achromatic
+  grey; `mode=rgb` maps three bytes to independent channels. As a
+  codec probe this is the worst-case-entropy signal: intra prediction,
+  motion search, and transform coding all gain nothing, making it the
+  standard rate-control / buffer-path stress input. Public
+  `snow::mix(seed, frame, x, y)` exposes the hash as a documented
+  output contract. Eight unit tests (mono + rgb closed-form
+  recomputation, cross-render byte determinism, seed sensitivity,
+  frame sensitivity, achromatic mono, 5σ mean-grey bound,
+  unknown-mode error) plus a URI open-twice byte-equality test, a
+  zero-input `video.snow` filter test, and `snow:` shorthand rows.
 - Video catalogue gained `movingbox` (URI alias `box`) — a solid
   `bw × bh` foreground rectangle translating at exactly-known signed
   integer pixels-per-frame `(vx, vy)` over a solid background, with

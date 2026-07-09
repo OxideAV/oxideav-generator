@@ -19,7 +19,8 @@ use crate::audio::f32_sample_to_i16;
 use crate::audio::synth as audio_synth;
 use crate::image::{fractal, gradient, grating, noise, pattern, plasma, xc, Rgba8Image};
 use crate::video::{
-    colorwheel, fractal_zoom, gradient_animate, movingbox, scroll, smptebars, testsrc, zoneplate,
+    colorwheel, fractal_zoom, gradient_animate, movingbox, scroll, smptebars, snow, testsrc,
+    zoneplate,
 };
 
 /// Install every generator filter into `ctx.filters`.
@@ -30,7 +31,7 @@ use crate::video::{
 ///   `image.fractal`, `image.plasma`, `image.noise`
 /// - `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
 ///   `video.gradient_animate`, `video.zoneplate`, `video.scroll`,
-///   `video.colorwheel`, `video.movingbox`
+///   `video.colorwheel`, `video.movingbox`, `video.snow`
 pub fn register_filters(ctx: &mut RuntimeContext) {
     ctx.filters
         .register("audio.synth", Box::new(make_audio_synth));
@@ -65,6 +66,8 @@ pub fn register_filters(ctx: &mut RuntimeContext) {
         .register("video.colorwheel", Box::new(make_video_colorwheel));
     ctx.filters
         .register("video.movingbox", Box::new(make_video_movingbox));
+    ctx.filters
+        .register("video.snow", Box::new(make_video_snow));
 }
 
 /// Convert a JSON `params` object into the `BTreeMap<String, String>`
@@ -245,6 +248,10 @@ fn make_video_colorwheel(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn
 }
 fn make_video_movingbox(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
     let seq = movingbox::render(&params_to_query(params))?;
+    Ok(video_filter_from_seq(seq))
+}
+fn make_video_snow(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
+    let seq = snow::render(&params_to_query(params))?;
     Ok(video_filter_from_seq(seq))
 }
 

@@ -26,7 +26,9 @@ motion-estimation probe, rotating `colorwheel` — polar hue from the
 `atan2` angle with radial saturation, a chroma + angular-motion probe,
 `movingbox` — a solid rectangle translating at exactly-known signed
 integer pixels-per-frame over a solid background, the local-motion
-ground-truth probe).
+ground-truth probe, seeded temporal `snow` noise — every pixel a
+stateless hash of `(seed, frame, x, y)`, the worst-case-entropy
+rate-control stress input).
 
 Two integration shapes are exposed:
 
@@ -109,6 +111,8 @@ generate://colorwheel?w=640&h=480&duration=5&fps=30&spin=60
 generate://colorwheel?spin=-90&lightness=0.5&saturation=1&w=640&h=480
 generate://movingbox?w=640&h=480&bw=32&bh=32&vx=3&vy=-2&duration=5&fps=30
 generate://movingbox?bw=16&bh=16&x0=100&y0=50&fg=red&bg=gray&vx=2
+generate://snow?w=640&h=480&duration=5&fps=30&seed=42
+generate://snow?mode=rgb&seed=7&w=320&h=240
 ```
 
 ## CLI shorthands (convert verb only)
@@ -135,6 +139,7 @@ registry. Recognised prefixes:
 | `scroll:`              | `generate://scroll`                                          |
 | `colorwheel:`          | `generate://colorwheel`                                      |
 | `movingbox:`           | `generate://movingbox`                                       |
+| `snow:`                | `generate://snow`                                            |
 | `noise:perlin`         | `generate://noise?type=perlin`                               |
 | `label:Hello world`    | `generate://label?text=Hello%20world` (needs `label` feature)|
 

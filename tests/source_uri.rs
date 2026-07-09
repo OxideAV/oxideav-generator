@@ -352,6 +352,36 @@ fn video_box_alias_matches_movingbox() {
 }
 
 #[test]
+fn video_snow_is_seed_deterministic_across_opens() {
+    // Same URI opened twice must produce byte-identical frame data
+    // (the pixel value is a pure function of (seed, frame, x, y)).
+    let reg = registry();
+    let uri = "generate://snow?w=16&h=16&seed=42&duration=0.2&fps=10";
+    let mut a = open_frames(&reg, uri);
+    let mut b = open_frames(&reg, uri);
+    let fa = drain(&mut *a).unwrap();
+    let fb = drain(&mut *b).unwrap();
+    assert_eq!(fa.len(), 2);
+    assert_eq!(fa.len(), fb.len());
+    for (x, y) in fa.iter().zip(fb.iter()) {
+        let (Frame::Video(x), Frame::Video(y)) = (x, y) else {
+            panic!("expected video frames");
+        };
+        assert_eq!(x.planes[0].data, y.planes[0].data);
+    }
+    // And a different seed changes the stream.
+    let mut c = open_frames(
+        &reg,
+        "generate://snow?w=16&h=16&seed=43&duration=0.2&fps=10",
+    );
+    let fc = drain(&mut *c).unwrap();
+    let (Frame::Video(x), Frame::Video(y)) = (&fa[0], &fc[0]) else {
+        panic!("expected video frames");
+    };
+    assert_ne!(x.planes[0].data, y.planes[0].data);
+}
+
+#[test]
 fn synth_chirp_returns_audio_frames() {
     // 0.05 s sweep from 200 → 800 Hz, linear. 8000 × 0.05 = 400 mono
     // samples × 2 bytes = 800 bytes of S16 LE PCM.

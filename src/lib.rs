@@ -14,7 +14,7 @@
 //!    `image.grating`, `image.fractal`, `image.plasma`, `image.noise`,
 //!    `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
 //!    `video.gradient_animate`, `video.zoneplate`, `video.scroll`,
-//!    `video.colorwheel`, `video.movingbox`
+//!    `video.colorwheel`, `video.movingbox`, `video.snow`
 //!    names. Register them
 //!    via [`register_filters`] on a
 //!    [`RuntimeContext`](oxideav_core::RuntimeContext).
@@ -72,7 +72,11 @@
 //!   `movingbox` (a solid `bw × bh` rectangle translating at signed
 //!   integer pixels-per-frame `(vx, vy)` over a solid background with
 //!   toroidal wrap — the local-motion counterpart of `scroll`'s global
-//!   motion, with the object's true motion vector known exactly).
+//!   motion, with the object's true motion vector known exactly),
+//!   `snow` (seeded temporal noise — every pixel of every frame is a
+//!   stateless counter-mode hash of `(seed, frame, x, y)`, the
+//!   worst-case-entropy rate-control stress input, byte-reproducible
+//!   across runs and machines).
 
 #![allow(clippy::too_many_arguments)]
 
@@ -144,6 +148,7 @@ mod tests {
             "video.scroll",
             "video.colorwheel",
             "video.movingbox",
+            "video.snow",
         ] {
             assert!(
                 ctx.filters.contains(name),
