@@ -21,6 +21,7 @@
 //! | `grating:`               | `generate://grating`                            |
 //! | `scroll:`                | `generate://scroll`                             |
 //! | `colorwheel:`            | `generate://colorwheel`                         |
+//! | `movingbox:`             | `generate://movingbox`                          |
 //! | `noise:perlin`           | `generate://noise?type=perlin`                  |
 //! | `label:Hello world`      | `generate://label?text=Hello%20world`           |
 //!
@@ -114,6 +115,12 @@ fn try_translate(input: &str) -> Option<String> {
             return Some("generate://colorwheel".to_string());
         }
         return Some(format!("generate://colorwheel?{rest}"));
+    }
+    if let Some(rest) = input.strip_prefix("movingbox:") {
+        if rest.is_empty() {
+            return Some("generate://movingbox".to_string());
+        }
+        return Some(format!("generate://movingbox?{rest}"));
     }
     if let Some(rest) = input.strip_prefix("noise:") {
         if rest.is_empty() {
@@ -357,6 +364,19 @@ mod tests {
         assert_eq!(
             translate("colorwheel:w=128&h=128&spin=90"),
             "generate://colorwheel?w=128&h=128&spin=90"
+        );
+    }
+
+    #[test]
+    fn movingbox_bare() {
+        assert_eq!(translate("movingbox:"), "generate://movingbox");
+    }
+
+    #[test]
+    fn movingbox_with_query() {
+        assert_eq!(
+            translate("movingbox:bw=16&bh=16&vx=3&vy=-2"),
+            "generate://movingbox?bw=16&bh=16&vx=3&vy=-2"
         );
     }
 

@@ -8,6 +8,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- Video catalogue gained `movingbox` (URI alias `box`) — a solid
+  `bw × bh` foreground rectangle translating at exactly-known signed
+  integer pixels-per-frame `(vx, vy)` over a solid background, with
+  toroidal wrap. Closed form:
+  `frame_f(x, y) = fg iff (x − x0 − f·vx) mod w < bw and
+  (y − y0 − f·vy) mod h < bh` (euclidean remainder, so negative
+  velocities / origins work). Where `scroll` probes *global* motion
+  (every pixel moves), `movingbox` probes *local* motion: one small
+  object over a static background — the case block motion search has
+  to isolate. A motion estimator on `(f, f+1)` should return
+  `(vx, vy)` for box blocks, `(0, 0)` for background blocks; every
+  frame contains exactly `bw · bh` foreground pixels (no resampling,
+  no sub-pixel phase). Params: `w`/`h`, `duration`, `fps`, `bw`/`bh`
+  (clamped to frame), `x0`/`y0`, `vx`/`vy`, `fg`/`bg` colours. Eight
+  unit tests (full-frame closed-form recomputation, exact fg pixel
+  count under double-edge wrap, residual-free displacement between
+  consecutive frames, static at zero velocity, colours, clamping,
+  bad-colour error, determinism) plus URI roundtrip with exact box
+  positions, `box` alias equivalence, zero-input `video.movingbox`
+  filter test, and `movingbox:` shorthand rows.
 - `type=sine` gained `phase=` (initial phase, degrees) and `chphase=`
   (per-channel phase offset, degrees). The closed form becomes
   `s_c[n] = amplitude · sin(2π·freq·n/rate + (phase + c·chphase)·π/180)`

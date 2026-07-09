@@ -26,7 +26,8 @@ use crate::audio::synth as audio_synth;
 use crate::image::label;
 use crate::image::{fractal, gradient, grating, noise, pattern, plasma, xc, Rgba8Image};
 use crate::video::{
-    colorwheel, fractal_zoom, gradient_animate, scroll, smptebars, testsrc, zoneplate, FrameSeq,
+    colorwheel, fractal_zoom, gradient_animate, movingbox, scroll, smptebars, testsrc, zoneplate,
+    FrameSeq,
 };
 
 /// Register the `generate` URI scheme as a [`FrameSource`] driver.
@@ -100,6 +101,9 @@ pub fn open_generate_frames(uri: &str) -> Result<Box<dyn FrameSource>> {
             &parsed.query,
         )?))),
         "colorwheel" => Ok(Box::new(VideoFrameSourceImpl::new(colorwheel::render(
+            &parsed.query,
+        )?))),
+        "movingbox" | "box" => Ok(Box::new(VideoFrameSourceImpl::new(movingbox::render(
             &parsed.query,
         )?))),
 

@@ -1,5 +1,5 @@
 //! Video generators (testsrc / smptebars / fractal_zoom /
-//! gradient_animate / zoneplate / scroll / colorwheel).
+//! gradient_animate / zoneplate / scroll / colorwheel / movingbox).
 //!
 //! Each generator emits a precomputed [`FrameSeq`] of RGBA8 frames
 //! with a known `(width, height, fps, duration_s)`. Both the URI
@@ -12,6 +12,7 @@
 pub mod colorwheel;
 pub mod fractal_zoom;
 pub mod gradient_animate;
+pub mod movingbox;
 pub mod scroll;
 pub mod smptebars;
 pub mod testsrc;

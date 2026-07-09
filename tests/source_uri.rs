@@ -303,6 +303,55 @@ fn video_colorwheel_returns_frames_variant() {
 }
 
 #[test]
+fn video_movingbox_returns_exact_box_positions() {
+    // 2×2 white box on black, starting at the origin, moving 2 px/frame
+    // rightward on an 8×4 frame. 0.2 s × 10 fps = 2 frames. Frame 0 has
+    // the box at x ∈ {0, 1}; frame 1 at x ∈ {2, 3} — pixel (0, 0) flips
+    // from fg to bg and pixel (2, 0) the other way.
+    let reg = registry();
+    let mut src = open_frames(
+        &reg,
+        "generate://movingbox?w=8&h=4&bw=2&bh=2&vx=2&vy=0&duration=0.2&fps=10",
+    );
+    let p = src.params();
+    assert_eq!(p.media_type, MediaType::Video);
+    assert_eq!(p.width, Some(8));
+    assert_eq!(p.height, Some(4));
+    assert_eq!(p.pixel_format, Some(PixelFormat::Rgba));
+    assert_eq!(p.frame_rate, Some(Rational::new(10, 1)));
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 2);
+    let (Frame::Video(v0), Frame::Video(v1)) = (&frames[0], &frames[1]) else {
+        panic!("expected two video frames");
+    };
+    assert_eq!(&v0.planes[0].data[0..4], &[255, 255, 255, 255]);
+    assert_eq!(&v1.planes[0].data[0..4], &[0, 0, 0, 255]);
+    assert_eq!(&v1.planes[0].data[8..12], &[255, 255, 255, 255]); // (2, 0)
+}
+
+#[test]
+fn video_box_alias_matches_movingbox() {
+    let reg = registry();
+    let mut a = open_frames(
+        &reg,
+        "generate://movingbox?w=8&h=4&bw=2&bh=2&vx=1&duration=0.2&fps=10",
+    );
+    let mut b = open_frames(
+        &reg,
+        "generate://box?w=8&h=4&bw=2&bh=2&vx=1&duration=0.2&fps=10",
+    );
+    let fa = drain(&mut *a).unwrap();
+    let fb = drain(&mut *b).unwrap();
+    assert_eq!(fa.len(), fb.len());
+    for (x, y) in fa.iter().zip(fb.iter()) {
+        let (Frame::Video(x), Frame::Video(y)) = (x, y) else {
+            panic!("expected video frames");
+        };
+        assert_eq!(x.planes[0].data, y.planes[0].data);
+    }
+}
+
+#[test]
 fn synth_chirp_returns_audio_frames() {
     // 0.05 s sweep from 200 → 800 Hz, linear. 8000 × 0.05 = 400 mono
     // samples × 2 bytes = 800 bytes of S16 LE PCM.

@@ -14,7 +14,7 @@
 //!    `image.grating`, `image.fractal`, `image.plasma`, `image.noise`,
 //!    `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
 //!    `video.gradient_animate`, `video.zoneplate`, `video.scroll`,
-//!    `video.colorwheel`
+//!    `video.colorwheel`, `video.movingbox`
 //!    names. Register them
 //!    via [`register_filters`] on a
 //!    [`RuntimeContext`](oxideav_core::RuntimeContext).
@@ -68,7 +68,11 @@
 //!   (constant-velocity toroidal translation of a base pattern —
 //!   bit-exact ground-truth motion-estimation probe), `colorwheel`
 //!   (rotating polar hue wheel — hue from `atan2` angle, saturation
-//!   from normalised radius; a chroma + angular-motion probe).
+//!   from normalised radius; a chroma + angular-motion probe),
+//!   `movingbox` (a solid `bw × bh` rectangle translating at signed
+//!   integer pixels-per-frame `(vx, vy)` over a solid background with
+//!   toroidal wrap — the local-motion counterpart of `scroll`'s global
+//!   motion, with the object's true motion vector known exactly).
 
 #![allow(clippy::too_many_arguments)]
 
@@ -139,6 +143,7 @@ mod tests {
             "video.zoneplate",
             "video.scroll",
             "video.colorwheel",
+            "video.movingbox",
         ] {
             assert!(
                 ctx.filters.contains(name),

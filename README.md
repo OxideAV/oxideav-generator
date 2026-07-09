@@ -23,7 +23,10 @@ noise, value / lattice noise, Worley cellular noise), and video
 zoom, hue-rotating gradient, zone-plate `cos(k·r²)` spatial-frequency
 probe, constant-velocity toroidal `scroll` — bit-exact ground-truth
 motion-estimation probe, rotating `colorwheel` — polar hue from the
-`atan2` angle with radial saturation, a chroma + angular-motion probe).
+`atan2` angle with radial saturation, a chroma + angular-motion probe,
+`movingbox` — a solid rectangle translating at exactly-known signed
+integer pixels-per-frame over a solid background, the local-motion
+ground-truth probe).
 
 Two integration shapes are exposed:
 
@@ -104,6 +107,8 @@ generate://scroll?pattern=checkerboard&size=32&vx=2&vy=1&w=640&h=480&duration=5&
 generate://scroll?pattern=plasma&seed=7&vx=-3&w=640&h=480&duration=5&fps=30
 generate://colorwheel?w=640&h=480&duration=5&fps=30&spin=60
 generate://colorwheel?spin=-90&lightness=0.5&saturation=1&w=640&h=480
+generate://movingbox?w=640&h=480&bw=32&bh=32&vx=3&vy=-2&duration=5&fps=30
+generate://movingbox?bw=16&bh=16&x0=100&y0=50&fg=red&bg=gray&vx=2
 ```
 
 ## CLI shorthands (convert verb only)
@@ -129,6 +134,7 @@ registry. Recognised prefixes:
 | `grating:`             | `generate://grating`                                         |
 | `scroll:`              | `generate://scroll`                                          |
 | `colorwheel:`          | `generate://colorwheel`                                      |
+| `movingbox:`           | `generate://movingbox`                                       |
 | `noise:perlin`         | `generate://noise?type=perlin`                               |
 | `label:Hello world`    | `generate://label?text=Hello%20world` (needs `label` feature)|
 
