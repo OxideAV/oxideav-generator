@@ -47,7 +47,11 @@
 //!   (sum of sines) / white-pink-brown-blue-violet noise / silence /
 //!   dc (constant `s[n] = level` offset signal) / impulse (unipolar
 //!   impulse train — `width` samples at `+amplitude` every `period`
-//!   samples, drift-free integer arithmetic).
+//!   samples, drift-free integer arithmetic). `type=sine` additionally
+//!   honours `phase=` (initial phase, degrees) and `chphase=`
+//!   (per-channel phase offset, degrees — channel `c` is rendered at
+//!   `phase + c·chphase`, the stereo / inter-channel-correlation
+//!   probe).
 //! - **Image basics** — solid colour (`xc`), linear / radial gradient,
 //!   checkerboard / horizontal / vertical / diagonal patterns,
 //!   sinusoidal grating (single-frequency cos at a chosen orientation).

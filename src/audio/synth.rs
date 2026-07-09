@@ -34,13 +34,20 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
     let duration_s = q_f64(query, "duration", 1.0)?.max(0.0);
     let amplitude = q_f64(query, "amplitude", 0.8)?.clamp(0.0, 1.0) as f32;
     let frame_count = (duration_s * sample_rate as f64).round() as usize;
+    // Initial phase + per-channel phase offset, both in degrees.
+    // Honoured by `type=sine` (the exactness workhorse for stereo /
+    // mid-side / inter-channel-correlation probes); other types ignore
+    // them, matching the crate-wide extra-keys-are-ignored convention.
+    let phase_deg = q_f64(query, "phase", 0.0)?;
+    let chphase_deg = q_f64(query, "chphase", 0.0)?;
 
     let mono: Vec<f32> = match kind {
-        "sine" => sine(
+        "sine" => sine_phase(
             q_f64(query, "freq", 440.0)? as f32,
             sample_rate,
             frame_count,
             amplitude,
+            phase_deg.to_radians() as f32,
         ),
         "square" => square(
             q_f64(query, "freq", 440.0)? as f32,
@@ -449,8 +456,21 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
         }
     };
 
-    // Channel-replicate to interleaved layout.
-    let samples = if channels == 1 {
+    // Interleave to the output channel layout. `type=sine` with a
+    // non-zero `chphase=` renders channel `c` at initial phase
+    // `phase + c·chphase` degrees (channel 0 is the `mono` buffer,
+    // already at `phase`); every other configuration replicates the
+    // mono buffer across channels.
+    let samples = if channels > 1 && kind == "sine" && chphase_deg != 0.0 {
+        let freq = q_f64(query, "freq", 440.0)? as f32;
+        let mut chans: Vec<Vec<f32>> = Vec::with_capacity(channels as usize);
+        chans.push(mono);
+        for c in 1..channels {
+            let ph = (phase_deg + c as f64 * chphase_deg).to_radians() as f32;
+            chans.push(sine_phase(freq, sample_rate, frame_count, amplitude, ph));
+        }
+        interleave(&chans)
+    } else if channels == 1 {
         mono
     } else {
         let mut out = Vec::with_capacity(mono.len() * channels as usize);
@@ -469,12 +489,42 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<AudioBuffer> {
     })
 }
 
-/// Sine oscillator at `freq` Hz.
+/// Sine oscillator at `freq` Hz (zero initial phase).
 pub fn sine(freq: f32, sample_rate: u32, n: usize, amplitude: f32) -> Vec<f32> {
+    sine_phase(freq, sample_rate, n, amplitude, 0.0)
+}
+
+/// Sine oscillator at `freq` Hz with an initial phase in radians:
+///
+/// ```text
+/// s[n] = amplitude · sin(2π · freq · n / rate + phase)
+/// ```
+///
+/// The phase is a pure additive offset inside the closed form — no
+/// phase accumulator — so `phase = π/2` is exactly the matching cosine
+/// and two channels rendered `Δφ` apart stay `Δφ` apart for the whole
+/// buffer. With `phase = 0.0` the output is bit-identical to [`sine`]
+/// (the argument reduces to the same float expression).
+pub fn sine_phase(freq: f32, sample_rate: u32, n: usize, amplitude: f32, phase: f32) -> Vec<f32> {
     let dt = 1.0 / sample_rate as f32;
     (0..n)
-        .map(|i| amplitude * (TAU * freq * i as f32 * dt).sin())
+        .map(|i| amplitude * (TAU * freq * i as f32 * dt + phase).sin())
         .collect()
+}
+
+/// Interleave per-channel buffers (all the same length) into a single
+/// frame-major buffer: output index `i·C + c` is sample `i` of channel
+/// `c`.
+fn interleave(chans: &[Vec<f32>]) -> Vec<f32> {
+    let c = chans.len();
+    let n = chans.first().map(|b| b.len()).unwrap_or(0);
+    let mut out = Vec::with_capacity(n * c);
+    for i in 0..n {
+        for ch in chans {
+            out.push(ch[i]);
+        }
+    }
+    out
 }
 
 /// 50%-duty square wave at `freq` Hz.
@@ -3761,5 +3811,142 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("dc"), "{msg}");
         assert!(msg.contains("impulse"), "{msg}");
+    }
+
+    // ───── sine phase / per-channel phase offsets ─────
+
+    #[test]
+    fn sine_phase_closed_form() {
+        // s[n] must equal A·sin(2π·f·n/rate + φ) computed independently.
+        let (freq, rate, amp, phase) = (440.0_f32, 8000_u32, 0.8_f32, 0.7_f32);
+        let buf = sine_phase(freq, rate, 64, amp, phase);
+        for (n, &s) in buf.iter().enumerate() {
+            let want = amp * (TAU * freq * n as f32 / rate as f32 + phase).sin();
+            // 1e-5 slack: the impl multiplies by dt = 1/rate while this
+            // recomputation divides by rate — one ULP of argument
+            // difference at arg ≈ 22 rad shows up in the 6th decimal.
+            assert!(
+                (s - want).abs() < 1e-5,
+                "sample {n}: got {s}, closed form {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn sine_phase_zero_is_bitexact_sine() {
+        let a = sine(440.0, 8000, 256, 0.8);
+        let b = sine_phase(440.0, 8000, 256, 0.8, 0.0);
+        assert_eq!(a, b, "phase 0 must be bit-identical to sine()");
+    }
+
+    #[test]
+    fn sine_phase_quarter_turn_is_cosine() {
+        // φ = π/2 turns sine into cosine exactly (trig identity).
+        let buf = sine_phase(200.0, 8000, 128, 1.0, std::f32::consts::FRAC_PI_2);
+        for (n, &s) in buf.iter().enumerate() {
+            let want = (TAU * 200.0 * n as f32 / 8000.0).cos();
+            assert!((s - want).abs() < 1e-5, "sample {n}: {s} vs cos {want}");
+        }
+    }
+
+    #[test]
+    fn sine_dispatcher_phase_param_in_degrees() {
+        // phase=90 → cosine. Sample 0 of a cosine is +amplitude.
+        let buf = render(&map(&[
+            ("type", "sine"),
+            ("freq", "440"),
+            ("phase", "90"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        assert!(
+            (buf.samples[0] - 0.8).abs() < 1e-6,
+            "s[0] = {}",
+            buf.samples[0]
+        );
+    }
+
+    #[test]
+    fn sine_dispatcher_chphase_offsets_second_channel() {
+        // Stereo, chphase=90: channel 0 is the plain sine, channel 1
+        // the matching cosine. Interleaved layout: even index = ch 0,
+        // odd index = ch 1.
+        let buf = render(&map(&[
+            ("type", "sine"),
+            ("freq", "440"),
+            ("channels", "2"),
+            ("chphase", "90"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        assert_eq!(buf.channels, 2);
+        assert_eq!(buf.samples.len(), 160); // 80 frames × 2 channels
+        for n in 0..80usize {
+            let t = TAU * 440.0 * n as f32 / 8000.0;
+            let want0 = 0.8 * t.sin();
+            let want1 = 0.8 * (t + std::f32::consts::FRAC_PI_2).sin();
+            let got0 = buf.samples[2 * n];
+            let got1 = buf.samples[2 * n + 1];
+            assert!((got0 - want0).abs() < 1e-5, "frame {n} ch0");
+            assert!((got1 - want1).abs() < 1e-5, "frame {n} ch1");
+        }
+    }
+
+    #[test]
+    fn sine_dispatcher_chphase_stacks_on_phase() {
+        // phase=45 + chphase=90 → ch0 at 45°, ch1 at 135°.
+        let buf = render(&map(&[
+            ("type", "sine"),
+            ("freq", "100"),
+            ("channels", "2"),
+            ("phase", "45"),
+            ("chphase", "90"),
+            ("duration", "0.005"),
+        ]))
+        .unwrap();
+        for n in 0..40usize {
+            let t = TAU * 100.0 * n as f32 / 8000.0;
+            let want0 = 0.8 * (t + 45.0_f32.to_radians()).sin();
+            let want1 = 0.8 * (t + 135.0_f32.to_radians()).sin();
+            assert!((buf.samples[2 * n] - want0).abs() < 1e-6, "frame {n} ch0");
+            assert!(
+                (buf.samples[2 * n + 1] - want1).abs() < 1e-6,
+                "frame {n} ch1"
+            );
+        }
+    }
+
+    #[test]
+    fn sine_dispatcher_stereo_without_chphase_still_replicates() {
+        let buf = render(&map(&[
+            ("type", "sine"),
+            ("channels", "2"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        for n in 0..(buf.samples.len() / 2) {
+            assert_eq!(
+                buf.samples[2 * n],
+                buf.samples[2 * n + 1],
+                "chphase absent ⇒ channels must be bit-identical"
+            );
+        }
+    }
+
+    #[test]
+    fn sine_dispatcher_full_turn_chphase_matches_replication() {
+        // chphase=360 is a full turn: 2π periodicity brings channel 1
+        // back onto channel 0 (within float rounding of x+2π).
+        let buf = render(&map(&[
+            ("type", "sine"),
+            ("channels", "2"),
+            ("chphase", "360"),
+            ("duration", "0.01"),
+        ]))
+        .unwrap();
+        for n in 0..(buf.samples.len() / 2) {
+            let d = (buf.samples[2 * n] - buf.samples[2 * n + 1]).abs();
+            assert!(d < 1e-5, "frame {n}: |ch0 − ch1| = {d}");
+        }
     }
 }

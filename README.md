@@ -12,7 +12,8 @@ ring modulation / DTMF touch-tones / ADSR-enveloped tone / Klatt-style
 two-formant vowel synthesizer / Shepard tone (octave-spaced
 Gaussian-weighted sine stack) / multi-tone /
 white-pink-brown-blue-violet noise / silence / DC (constant offset) /
-impulse train (drift-free integer period)),
+impulse train (drift-free integer period); sine takes `phase=` +
+per-channel `chphase=` offsets for stereo-correlation probes),
 image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes, sinusoidal grating —
 single-frequency cos at a chosen orientation), procedural imagery
@@ -52,6 +53,8 @@ tree when text rendering is not needed.
 
 ```
 generate://synth?type=sine&freq=440&duration=5
+generate://synth?type=sine&freq=440&phase=90&duration=5          # cosine
+generate://synth?type=sine&freq=440&channels=2&chphase=90&duration=5   # quadrature stereo
 generate://synth?type=square&freq=220&duration=2&amplitude=0.5
 generate://synth?type=supersaw&freq=440&voices=7&detune=12&duration=2
 generate://synth?type=pwm&freq=220&duty=0.25&duration=2

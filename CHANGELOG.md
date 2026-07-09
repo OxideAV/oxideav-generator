@@ -8,6 +8,23 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- `type=sine` gained `phase=` (initial phase, degrees) and `chphase=`
+  (per-channel phase offset, degrees). The closed form becomes
+  `s_c[n] = amplitude · sin(2π·freq·n/rate + (phase + c·chphase)·π/180)`
+  for channel `c` — the phase is a pure additive offset inside the
+  argument (no accumulator), so `phase=90` is exactly the matching
+  cosine and two channels rendered `Δφ` apart stay `Δφ` apart for the
+  whole buffer. With `chphase=0` (default) stereo renders remain
+  bit-identical channel replicas, and `phase=0` is bit-identical to
+  the previous `sine` output, so no existing fixture moves. New public
+  `sine_phase(freq, rate, n, amplitude, phase_rad)` alongside `sine`
+  (now the zero-phase special case). Quadrature stereo
+  (`channels=2&chphase=90`) is the canonical stereo /
+  mid-side / inter-channel-correlation codec probe. Eight unit tests
+  (independent closed-form recomputation, bit-exact zero-phase
+  equivalence, cosine identity, degree parsing, chphase interleave
+  layout, phase+chphase stacking, replication default, 360°
+  periodicity).
 - Audio catalogue gained `dc` and `impulse`. `type=dc` renders a
   constant signal `s[n] = level` (signed, clamped to `[-1, 1]`,
   defaulting to the `amplitude` knob) — the classic offset / clipping /
