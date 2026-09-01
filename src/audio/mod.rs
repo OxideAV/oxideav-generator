@@ -15,6 +15,7 @@ pub mod synth;
 /// and by the zero-input filter wrapper to materialise PCM bytes from
 /// the f32 mixing buffer.
 #[inline]
+#[doc(hidden)]
 pub fn f32_sample_to_i16(x: f32) -> i16 {
     let clipped = x.clamp(-1.0, 1.0);
     if clipped >= 0.0 {

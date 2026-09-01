@@ -316,6 +316,7 @@ fn rgba_image_to_video_frame(img: Rgba8Image, pts: i64) -> VideoFrame {
 /// `kind` is the path component (e.g. `synth`, `xc`, `gradient`); `query`
 /// is the percent-decoded `key=value` map from the query string.
 #[derive(Debug, Clone)]
+#[doc(hidden)]
 pub struct ParsedUri {
     pub kind: String,
     pub query: BTreeMap<String, String>,
@@ -407,6 +408,7 @@ fn hex_nibble(c: u8) -> Result<u8> {
 }
 
 /// Convenience: `query.get("k")` parsed as a `f64`, or `default`.
+#[doc(hidden)]
 pub fn q_f64(q: &BTreeMap<String, String>, key: &str, default: f64) -> Result<f64> {
     match q.get(key) {
         None => Ok(default),
@@ -419,6 +421,7 @@ pub fn q_f64(q: &BTreeMap<String, String>, key: &str, default: f64) -> Result<f6
 }
 
 /// Convenience: `query.get("k")` parsed as a `u32`, or `default`.
+#[doc(hidden)]
 pub fn q_u32(q: &BTreeMap<String, String>, key: &str, default: u32) -> Result<u32> {
     match q.get(key) {
         None => Ok(default),
@@ -432,6 +435,7 @@ pub fn q_u32(q: &BTreeMap<String, String>, key: &str, default: u32) -> Result<u3
 
 /// Convenience: `query.get("k")` parsed as an `i32` (sign allowed),
 /// or `default`.
+#[doc(hidden)]
 pub fn q_i32(q: &BTreeMap<String, String>, key: &str, default: i32) -> Result<i32> {
     match q.get(key) {
         None => Ok(default),
@@ -444,6 +448,7 @@ pub fn q_i32(q: &BTreeMap<String, String>, key: &str, default: i32) -> Result<i3
 }
 
 /// Convenience: `query.get("k")` as a `&str`, or `default`.
+#[doc(hidden)]
 pub fn q_str<'a>(q: &'a BTreeMap<String, String>, key: &str, default: &'a str) -> &'a str {
     q.get(key).map(|s| s.as_str()).unwrap_or(default)
 }

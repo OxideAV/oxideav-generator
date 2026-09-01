@@ -42,6 +42,7 @@ use crate::source::{q_f64, q_str, q_u32};
 /// not an implementation detail — changing any constant changes every
 /// generated stream.
 #[inline]
+#[doc(hidden)]
 pub fn mix(seed: u32, frame: u32, x: u32, y: u32) -> u32 {
     let mut v = seed
         ^ frame.wrapping_mul(0x9E37_79B9)

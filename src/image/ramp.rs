@@ -100,6 +100,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
 /// The module-doc closed form: quantisation level then 8-bit code, in
 /// exact integer arithmetic (round half up on the code expansion).
 #[inline]
+#[doc(hidden)]
 pub fn code_at(p: u32, len: u32, levels: u32) -> u8 {
     let level = (p as u64 * levels as u64 / len as u64) as u32;
     (((level as u64) * 255 + (levels as u64 - 1) / 2) / (levels as u64 - 1)) as u8
