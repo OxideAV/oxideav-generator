@@ -153,13 +153,15 @@ registry. Recognised prefixes:
 
 ## Wiring
 
-```rust,ignore
-use oxideav_core::{RuntimeContext, SourceRegistry};
+```rust
+use oxideav_core::RuntimeContext;
 
 let mut ctx = RuntimeContext::new();
 oxideav_source::register(&mut ctx);                      // file://
-oxideav_generator::register_source(&mut ctx.sources);    // generate://
-oxideav_generator::register_filters(&mut ctx);           // audio.synth, image.xc, ...
+oxideav_generator::register(&mut ctx);                   // generate:// + audio.synth, image.xc, ...
+// or the halves individually:
+// oxideav_generator::register_source(&mut ctx.sources); // generate:// only
+// oxideav_generator::register_filters(&mut ctx);        // filter factories only
 ```
 
 ## Status
