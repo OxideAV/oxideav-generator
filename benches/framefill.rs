@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
 fn map(items: &[(&str, &str)]) -> BTreeMap<String, String> {

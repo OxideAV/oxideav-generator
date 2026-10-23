@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use oxideav_core::{Error, Result};
 
-use super::palette::parse_color;
 use super::Rgba8Image;
+use super::palette::parse_color;
 use crate::source::{q_str, q_u32};
 
 pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
@@ -35,7 +35,7 @@ fn fill_checker(img: &mut Rgba8Image, cell: u32, c1: [u8; 4], c2: [u8; 4]) {
         for x in 0..img.width {
             let cx = x / cell;
             let cy = y / cell;
-            let c = if (cx + cy) % 2 == 0 { c1 } else { c2 };
+            let c = if (cx + cy).is_multiple_of(2) { c1 } else { c2 };
             img.put(x, y, c);
         }
     }
@@ -44,7 +44,7 @@ fn fill_checker(img: &mut Rgba8Image, cell: u32, c1: [u8; 4], c2: [u8; 4]) {
 fn fill_h_stripes(img: &mut Rgba8Image, cell: u32, c1: [u8; 4], c2: [u8; 4]) {
     for y in 0..img.height {
         let band = y / cell;
-        let c = if band % 2 == 0 { c1 } else { c2 };
+        let c = if band.is_multiple_of(2) { c1 } else { c2 };
         for x in 0..img.width {
             img.put(x, y, c);
         }
@@ -55,7 +55,7 @@ fn fill_v_stripes(img: &mut Rgba8Image, cell: u32, c1: [u8; 4], c2: [u8; 4]) {
     for y in 0..img.height {
         for x in 0..img.width {
             let band = x / cell;
-            let c = if band % 2 == 0 { c1 } else { c2 };
+            let c = if band.is_multiple_of(2) { c1 } else { c2 };
             img.put(x, y, c);
         }
     }

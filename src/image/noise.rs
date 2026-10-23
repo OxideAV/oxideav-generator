@@ -44,8 +44,8 @@ use std::collections::BTreeMap;
 
 use oxideav_core::{Error, Result};
 
-use super::palette::default_palette;
 use super::Rgba8Image;
+use super::palette::default_palette;
 use crate::source::{q_f64, q_str, q_u32};
 
 pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {

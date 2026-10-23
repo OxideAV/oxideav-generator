@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use oxideav_core::Result;
 
-use super::palette::parse_color;
 use super::Rgba8Image;
+use super::palette::parse_color;
 use crate::source::{q_str, q_u32};
 
 pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {

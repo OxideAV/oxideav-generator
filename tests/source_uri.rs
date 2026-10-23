@@ -75,7 +75,9 @@ fn synth_sine_pcm_amplitude_within_tolerance() {
         panic!();
     };
     let samples: Vec<i16> = a.data[0]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
     // Amplitude default 0.8 → peak ≈ 0.8 × 32767 ≈ 26214.
@@ -105,7 +107,7 @@ fn synth_dc_and_impulse_pcm_wire_codes_pinned() {
             panic!();
         };
         assert_eq!(a.samples, 40);
-        for (n, c) in a.data[0].chunks_exact(2).enumerate() {
+        for (n, c) in a.data[0].as_chunks::<2>().0.iter().enumerate() {
             let got = i16::from_le_bytes([c[0], c[1]]);
             assert_eq!(got, want, "level={level}, sample {n}");
         }
@@ -121,7 +123,7 @@ fn synth_dc_and_impulse_pcm_wire_codes_pinned() {
     let Frame::Audio(a) = &frames[0] else {
         panic!();
     };
-    for (n, c) in a.data[0].chunks_exact(2).enumerate() {
+    for (n, c) in a.data[0].as_chunks::<2>().0.iter().enumerate() {
         let got = i16::from_le_bytes([c[0], c[1]]);
         let want = if n % 10 == 0 { 26213 } else { 0 };
         assert_eq!(got, want, "sample {n}");
@@ -148,7 +150,9 @@ fn synth_quadrature_stereo_pcm_wire_layout() {
     assert_eq!(a.samples, 40); // per channel
     assert_eq!(a.data[0].len(), 40 * 2 * 2); // 2 ch × 2 bytes
     let s: Vec<i16> = a.data[0]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
     assert_eq!(s[0], 0, "ch0 sample 0 = sin(0)");
@@ -227,7 +231,7 @@ fn grating_default_returns_one_video_frame_with_unit_peak() {
         panic!();
     };
     assert_eq!(v.planes[0].data.len(), 64);
-    for chunk in v.planes[0].data.chunks_exact(4) {
+    for chunk in v.planes[0].data.as_chunks::<4>().0 {
         assert_eq!(chunk, &[255, 255, 255, 255]);
     }
 }
@@ -536,7 +540,9 @@ fn synth_vibrato_returns_audio_frames_with_correct_sample_count() {
     // the carrier's `amplitude` through unchanged because the phase
     // reshuffling cannot push the oscillator outside its own image.
     let samples: Vec<i16> = a.data[0]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
     let peak = samples
@@ -576,7 +582,9 @@ fn synth_shepard_returns_audio_frames_with_correct_sample_count() {
     // is normalised by Σ weights so a single voice's peak is the
     // worst-case alignment.
     let samples: Vec<i16> = a.data[0]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
     let peak = samples

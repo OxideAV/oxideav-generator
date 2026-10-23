@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use oxideav_core::Result;
 
 use super::FrameSeq;
-use crate::image::palette::hsl_to_rgb;
 use crate::image::Rgba8Image;
+use crate::image::palette::hsl_to_rgb;
 use crate::source::{q_f64, q_u32};
 
 pub fn render(query: &BTreeMap<String, String>) -> Result<FrameSeq> {

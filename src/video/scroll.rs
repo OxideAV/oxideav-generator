@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use oxideav_core::{Error, Result};
 
 use super::FrameSeq;
-use crate::image::{grating, pattern, plasma, Rgba8Image};
+use crate::image::{Rgba8Image, grating, pattern, plasma};
 use crate::source::{q_f64, q_i32, q_str, q_u32};
 
 /// Render a scrolling-pattern sequence.

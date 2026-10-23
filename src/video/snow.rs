@@ -228,7 +228,7 @@ mod tests {
             ("fps", "10"),
         ]))
         .unwrap();
-        for p in seq.frames[0].pixels.chunks_exact(4) {
+        for p in seq.frames[0].pixels.as_chunks::<4>().0 {
             assert_eq!(p[0], p[1]);
             assert_eq!(p[1], p[2]);
             assert_eq!(p[3], 255);
@@ -249,7 +249,9 @@ mod tests {
         .unwrap();
         let sum: u64 = seq.frames[0]
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| p[0] as u64)
             .sum();
         let mean = sum as f64 / (64.0 * 64.0);

@@ -175,10 +175,10 @@ fn translate_gradient(rest: &str, radial: bool) -> String {
     } else if !palette.is_empty() {
         parts.push(format!("from={}", encode(palette)));
     }
-    if let Some(e) = extra {
-        if !e.is_empty() {
-            parts.push(e.to_string());
-        }
+    if let Some(e) = extra
+        && !e.is_empty()
+    {
+        parts.push(e.to_string());
     }
     if parts.is_empty() {
         "generate://gradient".to_string()
@@ -204,20 +204,20 @@ fn translate_synth(rest: &str) -> String {
     }
     // Map positional args to the traditional terse-CLI order:
     // DURATION, TYPE, FREQ.
-    if let Some(d) = positional.first() {
-        if !d.is_empty() {
-            parts.push(format!("duration={}", encode(d)));
-        }
+    if let Some(d) = positional.first()
+        && !d.is_empty()
+    {
+        parts.push(format!("duration={}", encode(d)));
     }
-    if let Some(t) = positional.get(1) {
-        if !t.is_empty() {
-            parts.push(format!("type={}", encode(t)));
-        }
+    if let Some(t) = positional.get(1)
+        && !t.is_empty()
+    {
+        parts.push(format!("type={}", encode(t)));
     }
-    if let Some(f) = positional.get(2) {
-        if !f.is_empty() {
-            parts.push(format!("freq={}", encode(f)));
-        }
+    if let Some(f) = positional.get(2)
+        && !f.is_empty()
+    {
+        parts.push(format!("freq={}", encode(f)));
     }
     if parts.is_empty() {
         "generate://synth".to_string()

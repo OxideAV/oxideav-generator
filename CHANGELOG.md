@@ -480,6 +480,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- edition 2024, MSRV 1.95
 - Integration test `tests/source_uri.rs` now matches `SourceOutput`
   exhaustively via a fall-through `_` arm — the upstream enum became
   `#[non_exhaustive]`, which had broken `cargo test` for the entire

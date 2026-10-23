@@ -19,8 +19,8 @@ use oxideav_core::{
 use oxideav_raster::Renderer;
 use oxideav_scribe::{Face, FaceChain, Rgba, Shaper};
 
-use super::palette::parse_color;
 use super::Rgba8Image;
+use super::palette::parse_color;
 use crate::source::{q_f64, q_str, q_u32};
 
 /// Bundled fallback font. DejaVu Sans Mono 2.37 — Bitstream Vera

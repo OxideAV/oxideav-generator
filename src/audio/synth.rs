@@ -533,11 +533,7 @@ pub fn square(freq: f32, sample_rate: u32, n: usize, amplitude: f32) -> Vec<f32>
     (0..n)
         .map(|i| {
             let phase = (i as f32 % period_samples) / period_samples;
-            if phase < 0.5 {
-                amplitude
-            } else {
-                -amplitude
-            }
+            if phase < 0.5 { amplitude } else { -amplitude }
         })
         .collect()
 }
@@ -548,7 +544,7 @@ pub fn triangle(freq: f32, sample_rate: u32, n: usize, amplitude: f32) -> Vec<f3
     (0..n)
         .map(|i| {
             let phase = (i as f32 % period_samples) / period_samples; // 0..1
-                                                                      // 0 → 0, 0.25 → 1, 0.5 → 0, 0.75 → -1, 1 → 0
+            // 0 → 0, 0.25 → 1, 0.5 → 0, 0.75 → -1, 1 → 0
             let v = if phase < 0.25 {
                 phase * 4.0
             } else if phase < 0.75 {
@@ -1084,11 +1080,7 @@ pub fn vibrato(
                     // φ ∈ [0, TAU): first half-period positive, second half negative.
                     let cycle = phi * (1.0 / TAU);
                     let frac = cycle - cycle.floor();
-                    if frac < 0.5 {
-                        amplitude
-                    } else {
-                        -amplitude
-                    }
+                    if frac < 0.5 { amplitude } else { -amplitude }
                 }
                 "triangle" => {
                     let cycle = phi * (1.0 / TAU);
@@ -1394,7 +1386,7 @@ pub fn dtmf(
             let t = i as f32 * dt;
             out.push(half * (TAU * low * t).sin() + half * (TAU * high * t).sin());
         }
-        out.extend(std::iter::repeat(0.0).take(gap_n));
+        out.extend(std::iter::repeat_n(0.0, gap_n));
     }
     Ok(out)
 }
@@ -3783,7 +3775,7 @@ mod tests {
             .samples
             .iter()
             .enumerate()
-            .filter(|(_, &s)| s != 0.0)
+            .filter(|&(_, &s)| s != 0.0)
             .map(|(n, _)| n)
             .collect();
         assert_eq!(ones, vec![0, 100, 200, 300]);

@@ -30,8 +30,8 @@ use std::collections::BTreeMap;
 use oxideav_core::Result;
 
 use super::FrameSeq;
-use crate::image::palette::parse_color;
 use crate::image::Rgba8Image;
+use crate::image::palette::parse_color;
 use crate::source::{q_f64, q_i32, q_str, q_u32};
 
 /// Render a moving-box sequence.
@@ -72,7 +72,7 @@ pub fn render(query: &BTreeMap<String, String>) -> Result<FrameSeq> {
 
         let mut img = Rgba8Image::new(w, h);
         // Background fill.
-        for chunk in img.pixels.chunks_exact_mut(4) {
+        for chunk in img.pixels.as_chunks_mut::<4>().0 {
             chunk.copy_from_slice(&bg);
         }
         // Foreground box, wrapped per axis. Exactly bw·bh pixels.
@@ -171,7 +171,13 @@ mod tests {
         ]))
         .unwrap();
         for (f, img) in seq.frames.iter().enumerate() {
-            let fg_count = img.pixels.chunks_exact(4).filter(|p| *p == &FG[..]).count();
+            let fg_count = img
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| *p == &FG[..])
+                .count();
             assert_eq!(fg_count, 9, "frame {f} must have exactly bw·bh fg pixels");
         }
     }
@@ -257,7 +263,7 @@ mod tests {
             ("fps", "10"),
         ]))
         .unwrap();
-        for p in seq.frames[0].pixels.chunks_exact(4) {
+        for p in seq.frames[0].pixels.as_chunks::<4>().0 {
             assert_eq!(p, &FG[..]);
         }
     }

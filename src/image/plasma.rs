@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use oxideav_core::Result;
 
-use super::palette::default_palette;
 use super::Rgba8Image;
+use super::palette::default_palette;
 use crate::source::{q_f64, q_u32};
 
 pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
@@ -70,7 +70,11 @@ fn diamond_square(w: usize, h: usize, seed: u32, roughness: f32) -> Vec<f32> {
         // Square step
         let mut y = 0usize;
         while y < n {
-            let x_off = if (y / half) % 2 == 0 { half } else { 0 };
+            let x_off = if (y / half).is_multiple_of(2) {
+                half
+            } else {
+                0
+            };
             let mut x = x_off;
             while x < n {
                 let mut sum = 0.0f32;

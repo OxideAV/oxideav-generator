@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::audio::f32_sample_to_i16;
 use crate::audio::synth as audio_synth;
-use crate::image::{fractal, gradient, grating, noise, pattern, plasma, ramp, xc, Rgba8Image};
+use crate::image::{Rgba8Image, fractal, gradient, grating, noise, pattern, plasma, ramp, xc};
 use crate::video::{
     colorwheel, fractal_zoom, gradient_animate, movingbox, scroll, smptebars, snow, testsrc,
     zoneplate,
