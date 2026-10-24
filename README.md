@@ -91,6 +91,12 @@ generate://xc?color=red&w=640&h=480
 generate://xc?color=%23ff0000      # #ff0000 percent-encoded
 generate://gradient?w=640&h=480&from=red&to=blue&direction=horizontal
 generate://gradient?w=640&h=480&from=red&to=blue&type=radial
+generate://gradient?from=red&to=blue&direction=NorthWest            # IM compass point
+generate://gradient?from=red&to=blue&angle=30                       # degrees clockwise from North
+generate://gradient?from=red&to=blue&vector=10,10,300,200&bbox=320x240%2B10%2B10
+generate://gradient?from=black&to=white&colorspace=linear           # linear-light interpolation
+generate://radial-gradient?from=white&to=black&extent=Ellipse
+generate://radial-gradient?from=white&to=black&center=100,80&radii=60,40
 generate://pattern?type=checkerboard&w=640&h=480&size=32
 generate://grating?w=640&h=480&freq=8&angle=0&phase=0
 generate://grating?w=640&h=480&freq=16&angle=45&amplitude=0.7
@@ -99,6 +105,8 @@ generate://ramp?bits=2&channel=r&direction=vertical  # 4-level red-only banding
 generate://fractal?type=mandelbrot&w=640&h=480&cx=-0.5&cy=0&zoom=2&iter=256
 generate://fractal?type=julia&w=640&h=480&cx=-0.7&cy=0.27&iter=256
 generate://plasma?w=640&h=480&seed=42
+generate://plasma?from=red&to=blue&seed=42                          # IM plasma:red-blue
+generate://plasma?type=fractal&seed=42                              # IM plasma:fractal
 generate://noise?type=perlin&w=640&h=480&scale=64&seed=42
 generate://noise?type=simplex&w=640&h=480&scale=64&octaves=4&seed=42
 generate://noise?type=value&w=640&h=480&scale=64&octaves=4&seed=42
@@ -132,7 +140,11 @@ registry. Recognised prefixes:
 | `pattern:checkerboard` | `generate://pattern?type=checkerboard`                       |
 | `gradient:red-blue`    | `generate://gradient?from=red&to=blue`                       |
 | `radial:red-blue`      | `generate://gradient?type=radial&from=red&to=blue`           |
+| `radial-gradient:red-blue` | `generate://gradient?type=radial&from=red&to=blue`       |
+| `gradient:red-blue,angle=45` | `generate://gradient?from=red&to=blue&angle=45`        |
 | `plasma:`              | `generate://plasma`                                          |
+| `plasma:red-blue`      | `generate://plasma?from=red&to=blue`                         |
+| `plasma:fractal`       | `generate://plasma?type=fractal`                             |
 | `mandelbrot:`          | `generate://fractal?type=mandelbrot`                         |
 | `julia:`               | `generate://fractal?type=julia`                              |
 | `synth:5,sine,440`     | `generate://synth?duration=5&type=sine&freq=440`             |
@@ -201,8 +213,26 @@ frame unless noted:
 
 ## CSS colour parser
 
-Hand-rolled. Accepts a curated subset of the CSS/HTML4 named colours
-plus `#RGB`, `#RGBA`, `#RRGGBB`, and `#RRGGBBAA`.
+Hand-rolled. Accepts the 148 CSS Color 4 named colours (plus
+`transparent` / `none`), the X11 `gray0`…`gray100` percent greys,
+`rgb()` / `rgba()` / `srgb()` / `srgba()` / `gray()` / `hsl()` /
+`hsla()` (numbers or percentages), and `#RGB`, `#RGBA`, `#RRGGBB`,
+`#RRGGBBAA`, `#RRRRGGGGBBBB`, `#RRRRGGGGBBBBAAAA`. Bare `gray` / `grey`
+follow CSS (128); ImageMagick's own table uses 126 / 190.
+
+## ImageMagick pseudo-image parity
+
+`gradient` / `radial-gradient` accept the ImageMagick 7
+`-define gradient:` keys as query parameters (`direction`, `angle`,
+`vector`, `extent`, `bbox`/`bounding-box`, `center`, `radii`) and
+match `magick … -depth 8` output within one level per channel
+(`tests/magick_parity.rs`, run when `magick` is on `PATH`). The one
+deliberate difference: ImageMagick 7.1.2 copies the left neighbour into
+the gradient vector's start pixel, while this crate renders the defined
+value. `plasma:c1-c2` / `plasma:fractal` match ImageMagick's
+statistics (gradient direction, noise spread, smoothness), not its
+pixels, because the plasma recursion and random source are not
+documented.
 
 ## Determinism
 

@@ -29,7 +29,8 @@
 //!
 //! [`shorthand::translate`] takes short, colon-prefixed CLI inputs in the
 //! traditional Unix media-tool style — `xc:red`, `gradient:red-blue`,
-//! `synth:5,sine,440`, `testsrc:` — and rewrites them to canonical
+//! `radial-gradient:red-blue`, `plasma:fractal`, `synth:5,sine,440`,
+//! `testsrc:` — and rewrites them to canonical
 //! `generate://...` URIs. The CLI's `convert` verb runs every input
 //! through this translator before handing it to the source registry.
 //! Other verbs (probe / transcode / remux / run) accept the canonical
@@ -53,14 +54,21 @@
 //!   (per-channel phase offset, degrees — channel `c` is rendered at
 //!   `phase + c·chphase`, the stereo / inter-channel-correlation
 //!   probe).
-//! - **Image basics** — solid colour (`xc`), linear / radial gradient,
+//! - **Image basics** — solid colour (`xc`), linear / radial two-stop
+//!   gradients with the ImageMagick 7 `gradient:` / `radial-gradient:`
+//!   option surface (`direction` compass points, `angle`, `vector`,
+//!   `extent`, `bounding-box`, `center`, `radii`, premultiplied-alpha
+//!   stops, optional linear-light interpolation — pixel-exact against
+//!   `magick -depth 8`),
 //!   checkerboard / horizontal / vertical / diagonal patterns,
 //!   sinusoidal grating (single-frequency cos at a chosen orientation),
 //!   `ramp` (per-channel quantised gradient ramp at a configurable
 //!   `bits=1..=8` depth — exact integer level / code closed form, the
 //!   banding / dithering / bit-depth-conversion probe).
 //! - **Procedural images** — Mandelbrot + Julia fractals, plasma
-//!   (recursive midpoint displacement), Perlin + simplex gradient
+//!   (recursive midpoint displacement; palette, ImageMagick-style
+//!   `plasma:c1-c2` two-colour and `plasma:fractal` random-corner
+//!   forms, seeded), Perlin + simplex gradient
 //!   noise, Worley cellular noise (`type=worley`, alias `cellular`;
 //!   `dist=euclidean|manhattan|chebyshev`, `k ∈ [1, 4]`,
 //!   `points ∈ [1, 4]` feature-points per cell).

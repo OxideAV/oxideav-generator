@@ -11,7 +11,12 @@
 //! | `pattern:checkerboard`   | `generate://pattern?type=checkerboard`          |
 //! | `gradient:red-blue`      | `generate://gradient?from=red&to=blue`          |
 //! | `radial:red-blue`        | `generate://gradient?type=radial&from=red&to=blue` |
+//! | `radial-gradient:red-blue` | `generate://gradient?type=radial&from=red&to=blue` |
+//! | `gradient:red-blue,angle=45&extent=Circle` | `generate://gradient?from=red&to=blue&angle=45&extent=Circle` |
 //! | `plasma:`                | `generate://plasma`                             |
+//! | `plasma:red-blue`        | `generate://plasma?from=red&to=blue`            |
+//! | `plasma:fractal`         | `generate://plasma?type=fractal`                |
+//! | `plasma:42`              | `generate://plasma?seed=42`                     |
 //! | `mandelbrot:`            | `generate://fractal?type=mandelbrot`            |
 //! | `julia:`                 | `generate://fractal?type=julia`                 |
 //! | `synth:5,sine,440`       | `generate://synth?type=sine&freq=440&duration=5` |
@@ -58,14 +63,14 @@ fn try_translate(input: &str) -> Option<String> {
     if let Some(rest) = input.strip_prefix("gradient:") {
         return Some(translate_gradient(rest, false));
     }
-    if let Some(rest) = input.strip_prefix("radial:") {
+    if let Some(rest) = input
+        .strip_prefix("radial-gradient:")
+        .or_else(|| input.strip_prefix("radial:"))
+    {
         return Some(translate_gradient(rest, true));
     }
     if let Some(rest) = input.strip_prefix("plasma:") {
-        if rest.is_empty() {
-            return Some("generate://plasma".to_string());
-        }
-        return Some(format!("generate://plasma?seed={}", encode(rest)));
+        return Some(translate_plasma(rest));
     }
     if let Some(rest) = input.strip_prefix("mandelbrot:") {
         if rest.is_empty() {
@@ -154,26 +159,60 @@ fn try_translate(input: &str) -> Option<String> {
     None
 }
 
+/// Position of the first `needle` byte that sits outside any `(…)`
+/// group — so `rgb(0,0,255)-blue` splits on the `-`, not inside the
+/// function call.
+fn find_outside_parens(s: &str, needle: u8) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, b) in s.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ if b == needle && depth <= 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `spec[,k=v&…]` → `(spec, Some("k=v&…"))`. The comma only counts as
+/// the suffix separator when what follows looks like a query (`=`),
+/// so colour functions with commas (`rgb(0,0,255)`) stay whole.
+fn split_query_suffix(rest: &str) -> (&str, Option<&str>) {
+    match find_outside_parens(rest, b',') {
+        Some(i) if rest[i + 1..].contains('=') => (&rest[..i], Some(&rest[i + 1..])),
+        _ => (rest, None),
+    }
+}
+
+/// `c1-c2` → `(c1, Some(c2))`, splitting on the first `-` outside
+/// parentheses.
+fn split_two_colours(spec: &str) -> (&str, Option<&str>) {
+    match find_outside_parens(spec, b'-') {
+        Some(i) => (&spec[..i], Some(&spec[i + 1..])),
+        None => (spec, None),
+    }
+}
+
 /// `red-blue` → `from=red&to=blue`, `red` → `from=red`. Allows an
 /// optional explicit query suffix after a `,`: `red-blue,w=32&h=32`.
 fn translate_gradient(rest: &str, radial: bool) -> String {
-    let (palette, extra) = match rest.split_once(',') {
-        Some((p, e)) => (p, Some(e)),
-        None => (rest, None),
-    };
+    let (palette, extra) = split_query_suffix(rest);
     let mut parts: Vec<String> = Vec::new();
     if radial {
         parts.push("type=radial".to_string());
     }
-    if let Some((from, to)) = palette.split_once('-') {
-        if !from.is_empty() {
-            parts.push(format!("from={}", encode(from)));
+    match split_two_colours(palette) {
+        (from, Some(to)) => {
+            if !from.is_empty() {
+                parts.push(format!("from={}", encode(from)));
+            }
+            if !to.is_empty() {
+                parts.push(format!("to={}", encode(to)));
+            }
         }
-        if !to.is_empty() {
-            parts.push(format!("to={}", encode(to)));
-        }
-    } else if !palette.is_empty() {
-        parts.push(format!("from={}", encode(palette)));
+        (from, None) if !from.is_empty() => parts.push(format!("from={}", encode(from))),
+        _ => {}
     }
     if let Some(e) = extra
         && !e.is_empty()
@@ -184,6 +223,43 @@ fn translate_gradient(rest: &str, radial: bool) -> String {
         "generate://gradient".to_string()
     } else {
         format!("generate://gradient?{}", parts.join("&"))
+    }
+}
+
+/// `plasma:` → bare; `plasma:fractal` → `type=fractal`; `plasma:42`
+/// (digits only) → `seed=42` (historical form); `plasma:red-blue` /
+/// `plasma:red` → `from=red&to=blue` / `from=red`. Like `gradient:`,
+/// an optional `,k=v&…` suffix is appended verbatim.
+fn translate_plasma(rest: &str) -> String {
+    let (spec, extra) = split_query_suffix(rest);
+    let mut parts: Vec<String> = Vec::new();
+    if spec.eq_ignore_ascii_case("fractal") {
+        parts.push("type=fractal".to_string());
+    } else if !spec.is_empty() && spec.bytes().all(|b| b.is_ascii_digit()) {
+        parts.push(format!("seed={spec}"));
+    } else {
+        match split_two_colours(spec) {
+            (from, Some(to)) => {
+                if !from.is_empty() {
+                    parts.push(format!("from={}", encode(from)));
+                }
+                if !to.is_empty() {
+                    parts.push(format!("to={}", encode(to)));
+                }
+            }
+            (from, None) if !from.is_empty() => parts.push(format!("from={}", encode(from))),
+            _ => {}
+        }
+    }
+    if let Some(e) = extra
+        && !e.is_empty()
+    {
+        parts.push(e.to_string());
+    }
+    if parts.is_empty() {
+        "generate://plasma".to_string()
+    } else {
+        format!("generate://plasma?{}", parts.join("&"))
     }
 }
 
@@ -283,6 +359,60 @@ mod tests {
     #[test]
     fn plasma_bare() {
         assert_eq!(translate("plasma:"), "generate://plasma");
+    }
+
+    #[test]
+    fn plasma_imagemagick_forms() {
+        assert_eq!(
+            translate("plasma:red-blue"),
+            "generate://plasma?from=red&to=blue"
+        );
+        assert_eq!(translate("plasma:red"), "generate://plasma?from=red");
+        assert_eq!(
+            translate("plasma:fractal"),
+            "generate://plasma?type=fractal"
+        );
+        assert_eq!(
+            translate("plasma:Fractal"),
+            "generate://plasma?type=fractal"
+        );
+        assert_eq!(translate("plasma:42"), "generate://plasma?seed=42");
+        assert_eq!(
+            translate("plasma:red-blue,seed=7&w=32"),
+            "generate://plasma?from=red&to=blue&seed=7&w=32"
+        );
+        assert_eq!(
+            translate("plasma:fractal,seed=7"),
+            "generate://plasma?type=fractal&seed=7"
+        );
+        // Colour functions keep their commas and dashes intact; the
+        // URI parser percent-decodes them back.
+        let uri = translate("plasma:#ff0000-rgb(0,0,255),seed=3");
+        let p = crate::source::ParsedUri::parse(&uri).unwrap();
+        assert_eq!(p.kind, "plasma");
+        assert_eq!(p.query["from"], "#ff0000");
+        assert_eq!(p.query["to"], "rgb(0,0,255)");
+        assert_eq!(p.query["seed"], "3");
+        let uri = translate("gradient:rgba(255,0,0,0.5)-hsl(240,100%,50%)");
+        let p = crate::source::ParsedUri::parse(&uri).unwrap();
+        assert_eq!(p.query["from"], "rgba(255,0,0,0.5)");
+        assert_eq!(p.query["to"], "hsl(240,100%,50%)");
+    }
+
+    #[test]
+    fn radial_gradient_imagemagick_prefix() {
+        assert_eq!(
+            translate("radial-gradient:red-blue"),
+            "generate://gradient?type=radial&from=red&to=blue"
+        );
+        assert_eq!(
+            translate("radial-gradient:"),
+            "generate://gradient?type=radial"
+        );
+        assert_eq!(
+            translate("gradient:red-blue,angle=45&extent=Circle"),
+            "generate://gradient?from=red&to=blue&angle=45&extent=Circle"
+        );
     }
 
     #[test]

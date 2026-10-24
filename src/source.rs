@@ -53,6 +53,13 @@ pub fn open_generate_frames(uri: &str) -> Result<Box<dyn FrameSource>> {
         "gradient" => Ok(Box::new(SingleImageFrameSource::new(gradient::render(
             &parsed.query,
         )?))),
+        // ImageMagick's `radial-gradient:` pseudo-image is the radial
+        // flavour of `gradient`; `type=radial` is forced.
+        "radial-gradient" | "radial_gradient" | "radial" => {
+            let mut q = parsed.query.clone();
+            q.insert("type".to_string(), "radial".to_string());
+            Ok(Box::new(SingleImageFrameSource::new(gradient::render(&q)?)))
+        }
         "pattern" => Ok(Box::new(SingleImageFrameSource::new(pattern::render(
             &parsed.query,
         )?))),
@@ -478,6 +485,26 @@ mod tests {
     fn parse_percent_decoded_color() {
         let p = ParsedUri::parse("generate://xc?color=%23ff0000").unwrap();
         assert_eq!(p.query.get("color").unwrap(), "#ff0000");
+    }
+
+    #[test]
+    fn radial_gradient_kind_is_the_radial_flavour() {
+        let mut a =
+            open_generate_frames("generate://radial-gradient?from=red&to=blue&w=5&h=5").unwrap();
+        let mut b =
+            open_generate_frames("generate://gradient?type=radial&from=red&to=blue&w=5&h=5")
+                .unwrap();
+        let (Frame::Video(a), Frame::Video(b)) = (a.next_frame().unwrap(), b.next_frame().unwrap())
+        else {
+            panic!("expected video frames");
+        };
+        assert_eq!(a.planes[0].data, b.planes[0].data);
+        // Centre pixel is the first colour, the corners the second.
+        assert_eq!(
+            &a.planes[0].data[(2 * 5 + 2) * 4..(2 * 5 + 2) * 4 + 4],
+            &[255, 0, 0, 255]
+        );
+        assert_eq!(&a.planes[0].data[0..4], &[0, 0, 255, 255]);
     }
 
     #[test]

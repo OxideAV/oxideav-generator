@@ -8,6 +8,58 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- ImageMagick 7 pseudo-image option surface for gradients and plasma
+  (issue #7). Exposed through additive `#[non_exhaustive]` records with
+  `new()` / `with_*` builders: `gradient::GradientOptions`
+  (+ `GradientDirection`, `GradientExtent`, `GradientColorspace`,
+  `BoundingBox`, `render_linear` / `render_radial`) and
+  `plasma::PlasmaOptions` (+ `PlasmaKind`, `render_opts`,
+  `displacement_field`). Reachable from `generate://` URIs, the
+  `image.gradient` / `image.plasma` filters, and the CLI shorthands.
+  - `gradient`: `direction` (all eight compass points; the old
+    `horizontal|vertical|diagonal` names still work), `angle` (degrees
+    clockwise from North, ramp spans the corner projections), `vector=x1,y1,x2,y2`,
+    `extent` (`SouthEast` default when no direction is given),
+    `bbox` / `bounding-box=WxH+X+Y` (must fit the canvas; outside is
+    the first colour, transparent when a stop has alpha),
+    `colorspace=linear` for linear-light interpolation (CSS Color 4
+    sRGB transfer). Stops interpolate with premultiplied alpha and
+    quantise through Q16, so 8-bit output matches
+    `magick … -depth 8` within one level on every probed case.
+    ImageMagick 7.1.2 copies the left neighbour into the vector's
+    start pixel; we render the defined value there instead (documented,
+    and the parity harness checks for exactly that one-pixel case).
+  - `radial-gradient` (new URI kind + `radial-gradient:` shorthand,
+    alias of `gradient?type=radial`): `extent`
+    `Circle|Diagonal|Ellipse|Maximum|Minimum` against the canvas
+    half-sizes, `center=x,y`, `radii=rx[,ry]`, a direction or vector
+    moves the centre to half the vector's end point (ImageMagick
+    behaviour), `bbox` masking.
+  - `plasma`: `from=` / `to=` (shorthand `plasma:c1-c2`, `plasma:red`
+    runs to black) adds independent seeded per-channel
+    midpoint-displacement noise to the two-colour gradient and takes
+    every gradient define; `type=fractal` (shorthand `plasma:fractal`)
+    uses four seeded random corner colours. `amplitude=` / `roughness=`
+    tune the noise; defaults match `magick -seed N plasma:` statistics
+    (per-channel sd about 20 to 30 levels at any size). Plasma pixels are not
+    identical to ImageMagick's: the plasma algorithm and its random
+    source are not documented under `docs/`, so seeded output only
+    matches statistically. The bare `generate://plasma` palette form
+    and `scroll?pattern=plasma` are unchanged byte-for-byte. The new
+    noise paths draw full-range uniforms from the top 32 LCG bits. The
+    palette path keeps its historical half-range draw.
+- Colour parser: the full 148-name CSS Color 4 table, `grayN` /
+  `greyN` X11 percent greys (ImageMagick's levels, such as gray50 = 127),
+  `rgb()` / `rgba()` / `srgb()` / `srgba()` / `gray()` / `hsl()` /
+  `hsla()` functional forms (numbers or percentages), and 12- and
+  16-digit hex. CLI shorthands keep commas and dashes inside colour
+  functions (`gradient:rgba(255,0,0,0.5)-blue`). Note that bare `gray`
+  and `grey` follow CSS (128); ImageMagick uses 126 and 190.
+- `tests/magick_parity.rs`: black-box harness against the `magick`
+  binary (skipped when it is not on `PATH`) covering about 700 gradient
+  cases (sizes 1×5 to 33×17, every direction, extent, angle, vector,
+  centre, radii and bounding-box probe) plus plasma statistics.
+
 - Wire-level PCM exactness tests at the `FrameSource` boundary: the
   asymmetric f32 → S16 mapping (`x ≥ 0` scales by 32767 and
   truncates; `x < 0` scales by 32768) is now pinned on the exact
