@@ -604,10 +604,13 @@ pub fn render_linear(opts: &GradientOptions) -> Result<Rgba8Image> {
         }
         None => {
             let theta = opts.angle.unwrap_or(0.0).to_radians();
-            // Snap floating-point dust (cos 90° ≈ 6e-17) to zero so a
-            // cardinal angle on a one-pixel-wide axis stays degenerate
-            // (single colour) instead of amplifying rounding noise.
-            let snap = |v: f64| if v.abs() < 1e-12 { 0.0 } else { v };
+            // Quantise the direction to a 1e-12 grid. This snaps
+            // floating-point dust (cos 90° ≈ 6e-17) to zero, so a cardinal
+            // angle on a one-pixel axis stays degenerate (one colour), and
+            // it makes the result independent of the platform libm: sin /
+            // cos may differ by an ulp between targets, which would flip
+            // exact-half cases such as t = 5/6 at 45° on 5x3.
+            let snap = |v: f64| (v * 1e12).round() / 1e12;
             let dx = snap(theta.sin());
             let dy = snap(-theta.cos());
             let r = (w - 1) as f64;
