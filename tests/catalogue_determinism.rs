@@ -96,6 +96,7 @@ fn every_image_kind_is_byte_deterministic() {
         "generate://gradient?from=rgba(255,0,0,0.5)&to=blue&colorspace=linear&w=8&h=8",
         "generate://radial-gradient?from=red&to=blue&center=2,2&radii=3,2&w=8&h=8",
         "generate://radial-gradient?extent=Diagonal&direction=East&w=8&h=8",
+        "generate://radial-gradient?extent=closest-corner&center=2,5&w=8&h=8",
         "generate://pattern?type=checkerboard&w=8&h=8&size=2",
         "generate://pattern?type=hstripes&w=8&h=8&size=2",
         "generate://pattern?type=vstripes&w=8&h=8&size=2",

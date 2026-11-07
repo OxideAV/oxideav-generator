@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
+- `radial-gradient` extents measured from the radial centre:
+  `closest-side`, `farthest-side`, `closest-corner`, `farthest-corner`
+  (`GradientExtent::{ClosestSide, FarthestSide, ClosestCorner,
+  FarthestCorner}`, new `GradientExtent::radii_at`). All four are
+  circles; with the default centre they equal `Minimum`, `Maximum`,
+  `Diagonal` and `Diagonal`, so they compose with `center=` (#7).
 - `hald` image generator: identity Hald CLUT (`generate://hald?level=N`,
   shorthand `hald:N`, filter `image.hald`). Level `N` gives an
   `N³ × N³` image with `N²` samples per channel, red fastest; output is

@@ -43,6 +43,15 @@
 //!   → `max(hx, hy)` both ways, `Minimum` → `min(hx, hy)`, `Ellipse`
 //!   → `(hx, hy)`, `Diagonal` → `√(hx² + hy²)`. Default `Circle`.
 //!   The extent is a property of the canvas, not of the centre.
+//!   Four further extents are measured from the radial centre `(cx, cy)`
+//!   to the canvas border, whose edges are the outermost pixel centres
+//!   `x = 0`, `x = w−1`, `y = 0`, `y = h−1` (the same convention as the
+//!   half-sizes above). All four are circles:
+//!   `ClosestSide` → `min(cx, w−1−cx, cy, h−1−cy)`, `FarthestSide` →
+//!   the `max` of the same four, `ClosestCorner` / `FarthestCorner` →
+//!   the smallest / largest distance to the four corner pixels. With
+//!   the default centre they reduce to `Minimum`, `Maximum`,
+//!   `Diagonal` and `Diagonal`.
 //! - a zero radius is a step: `t = 0` on the axis, `1` off it.
 //!
 //! **Bounding box** `WxH+X+Y` (must fit inside the canvas, like
@@ -168,10 +177,20 @@ pub enum GradientExtent {
     Ellipse,
     Maximum,
     Minimum,
+    /// Circle reaching the border side nearest the centre.
+    ClosestSide,
+    /// Circle reaching the border side farthest from the centre.
+    FarthestSide,
+    /// Circle through the canvas corner nearest the centre.
+    ClosestCorner,
+    /// Circle through the canvas corner farthest from the centre.
+    FarthestCorner,
 }
 
 impl GradientExtent {
-    /// Case-insensitive parse of the ImageMagick names.
+    /// Case-insensitive parse of the ImageMagick names, plus
+    /// `closest-side` / `farthest-side` / `closest-corner` /
+    /// `farthest-corner` (hyphen, underscore or no separator).
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s.trim().to_ascii_lowercase().as_str() {
             "circle" => Self::Circle,
@@ -179,6 +198,10 @@ impl GradientExtent {
             "ellipse" => Self::Ellipse,
             "maximum" | "max" => Self::Maximum,
             "minimum" | "min" => Self::Minimum,
+            "closest-side" | "closestside" | "closest_side" => Self::ClosestSide,
+            "farthest-side" | "farthestside" | "farthest_side" => Self::FarthestSide,
+            "closest-corner" | "closestcorner" | "closest_corner" => Self::ClosestCorner,
+            "farthest-corner" | "farthestcorner" | "farthest_corner" => Self::FarthestCorner,
             _ => return None,
         })
     }
@@ -191,21 +214,46 @@ impl GradientExtent {
             Self::Ellipse => "Ellipse",
             Self::Maximum => "Maximum",
             Self::Minimum => "Minimum",
+            Self::ClosestSide => "ClosestSide",
+            Self::FarthestSide => "FarthestSide",
+            Self::ClosestCorner => "ClosestCorner",
+            Self::FarthestCorner => "FarthestCorner",
         }
     }
 
-    /// `(rx, ry)` for a `w × h` canvas.
+    /// `(rx, ry)` for a `w × h` canvas with the default (canvas-centre)
+    /// radial centre.
     pub fn radii(self, w: u32, h: u32) -> (f64, f64) {
         let hx = (w.max(1) - 1) as f64 / 2.0;
         let hy = (h.max(1) - 1) as f64 / 2.0;
+        self.radii_at(w, h, hx, hy)
+    }
+
+    /// `(rx, ry)` for a `w × h` canvas and radial centre `(cx, cy)`.
+    /// Only the side / corner extents depend on the centre.
+    pub fn radii_at(self, w: u32, h: u32, cx: f64, cy: f64) -> (f64, f64) {
+        let hx = (w.max(1) - 1) as f64 / 2.0;
+        let hy = (h.max(1) - 1) as f64 / 2.0;
+        let right = (w.max(1) - 1) as f64;
+        let bottom = (h.max(1) - 1) as f64;
+        // Unsigned distances to the four sides (the centre may sit
+        // outside the canvas).
+        let dl = cx.abs();
+        let dr = (right - cx).abs();
+        let dt = cy.abs();
+        let db = (bottom - cy).abs();
+        let dist = |a: f64, b: f64| (a * a + b * b).sqrt();
+        let corners = [dist(dl, dt), dist(dr, dt), dist(dl, db), dist(dr, db)];
+        let circle = |r: f64| (r, r);
         match self {
-            Self::Circle | Self::Maximum => (hx.max(hy), hx.max(hy)),
-            Self::Minimum => (hx.min(hy), hx.min(hy)),
+            Self::Circle | Self::Maximum => circle(hx.max(hy)),
+            Self::Minimum => circle(hx.min(hy)),
             Self::Ellipse => (hx, hy),
-            Self::Diagonal => {
-                let d = (hx * hx + hy * hy).sqrt();
-                (d, d)
-            }
+            Self::Diagonal => circle(dist(hx, hy)),
+            Self::ClosestSide => circle(dl.min(dr).min(dt).min(db)),
+            Self::FarthestSide => circle(dl.max(dr).max(dt).max(db)),
+            Self::ClosestCorner => circle(corners.into_iter().fold(f64::INFINITY, f64::min)),
+            Self::FarthestCorner => circle(corners.into_iter().fold(0.0, f64::max)),
         }
     }
 }
@@ -427,7 +475,7 @@ impl GradientOptions {
         if let Some(e) = query.get("extent") {
             opts.extent = Some(GradientExtent::parse(e).ok_or_else(|| {
                 Error::invalid(format!(
-                    "gradient: unknown extent {e:?} (expected Circle|Diagonal|Ellipse|Maximum|Minimum)"
+                    "gradient: unknown extent {e:?} (expected Circle|Diagonal|Ellipse|Maximum|Minimum|closest-side|farthest-side|closest-corner|farthest-corner)"
                 ))
             })?);
         }
@@ -528,10 +576,11 @@ impl GradientOptions {
 
     /// Radial radii per the precedence in the module docs.
     fn radial_radii(&self) -> (f64, f64) {
-        let (ex, ey) = self
-            .extent
-            .unwrap_or(GradientExtent::Circle)
-            .radii(self.width, self.height);
+        let (cx, cy) = self.radial_center();
+        let (ex, ey) =
+            self.extent
+                .unwrap_or(GradientExtent::Circle)
+                .radii_at(self.width, self.height, cx, cy);
         match self.radii {
             Some((rx, Some(ry))) => (rx, ry),
             Some((rx, None)) => (rx, ey),
@@ -1235,6 +1284,74 @@ mod tests {
         assert_eq!(a.get(1, 1)[0], 60);
         assert_eq!(a.get(2, 2)[0], 60);
         assert_eq!(a.get(0, 0)[0], 180);
+    }
+
+    #[test]
+    fn side_and_corner_extents_reduce_to_canvas_extents_when_centred() {
+        for &(w, h) in &[(7u32, 5u32), (5, 9), (6, 6), (1, 4)] {
+            let px = |e| greys(&render_radial(&bw(w, h).with_extent(e)).unwrap());
+            use GradientExtent as E;
+            assert_eq!(px(E::ClosestSide), px(E::Minimum), "{w}x{h}");
+            assert_eq!(px(E::FarthestSide), px(E::Maximum), "{w}x{h}");
+            assert_eq!(px(E::ClosestCorner), px(E::Diagonal), "{w}x{h}");
+            assert_eq!(px(E::FarthestCorner), px(E::Diagonal), "{w}x{h}");
+        }
+    }
+
+    #[test]
+    fn side_and_corner_extents_follow_the_centre() {
+        use GradientExtent as E;
+        // 9x7 canvas (edges at x = 0, 8 and y = 0, 6), centre (2, 1):
+        // sides 2, 6, 1, 5; corners √5, √37, √29, √61.
+        let r = |e: E| e.radii_at(9, 7, 2.0, 1.0);
+        assert_eq!(r(E::ClosestSide), (1.0, 1.0));
+        assert_eq!(r(E::FarthestSide), (6.0, 6.0));
+        assert_eq!(r(E::ClosestCorner), (5f64.sqrt(), 5f64.sqrt()));
+        assert_eq!(r(E::FarthestCorner), (61f64.sqrt(), 61f64.sqrt()));
+        // The canvas extents ignore the centre.
+        assert_eq!(r(E::Ellipse), (4.0, 3.0));
+        // A centre outside the canvas measures unsigned distances.
+        assert_eq!(E::ClosestSide.radii_at(5, 5, -2.0, 2.0), (2.0, 2.0));
+
+        // Rendered (black centre → white): closest-side from (2, 1)
+        // reaches white one row up and one row down; farthest-corner
+        // reaches white only at the opposite corner.
+        let img =
+            render_radial(&bw(9, 7).with_center(2.0, 1.0).with_extent(E::ClosestSide)).unwrap();
+        assert_eq!(img.get(2, 1)[0], 0);
+        assert_eq!(img.get(2, 0)[0], 255);
+        assert_eq!(img.get(2, 2)[0], 255);
+        let img = render_radial(
+            &bw(9, 7)
+                .with_center(2.0, 1.0)
+                .with_extent(E::FarthestCorner),
+        )
+        .unwrap();
+        assert_eq!(img.get(8, 6)[0], 255);
+        assert!(img.get(7, 5)[0] < 255);
+        // Explicit radii still win over the extent.
+        let img = render_radial(
+            &bw(9, 7)
+                .with_center(2.0, 1.0)
+                .with_extent(E::ClosestSide)
+                .with_radii(4.0, Some(4.0)),
+        )
+        .unwrap();
+        assert_eq!(img.get(2, 3)[0], 128);
+    }
+
+    #[test]
+    fn side_and_corner_extent_names_parse() {
+        use GradientExtent as E;
+        for (s, e) in [
+            ("closest-side", E::ClosestSide),
+            ("FarthestSide", E::FarthestSide),
+            ("closest_corner", E::ClosestCorner),
+            ("Farthest-Corner", E::FarthestCorner),
+        ] {
+            assert_eq!(E::parse(s), Some(e), "{s}");
+            assert_eq!(E::parse(e.name()), Some(e));
+        }
     }
 
     #[test]

@@ -98,6 +98,7 @@ generate://gradient?from=red&to=blue&vector=10,10,300,200&bbox=320x240%2B10%2B10
 generate://gradient?from=black&to=white&colorspace=linear           # linear-light interpolation
 generate://radial-gradient?from=white&to=black&extent=Ellipse
 generate://radial-gradient?from=white&to=black&center=100,80&radii=60,40
+generate://radial-gradient?center=40,30&extent=farthest-corner
 generate://pattern?type=checkerboard&w=640&h=480&size=32
 generate://grating?w=640&h=480&freq=8&angle=0&phase=0
 generate://grating?w=640&h=480&freq=16&angle=45&amplitude=0.7
@@ -232,7 +233,10 @@ match `magick … -depth 8` output within one level per channel
 (`tests/magick_parity.rs`, run when `magick` is on `PATH`). The one
 deliberate difference: ImageMagick 7.1.2 copies the left neighbour into
 the gradient vector's start pixel, while this crate renders the defined
-value. `plasma:c1-c2` / `plasma:fractal` match ImageMagick's
+value. `extent` also takes `closest-side` / `farthest-side` /
+`closest-corner` / `farthest-corner`, circles measured from the radial
+centre (ImageMagick has no such extents; these are additions).
+`plasma:c1-c2` / `plasma:fractal` match ImageMagick's
 statistics (gradient direction, noise spread, smoothness), not its
 pixels, because the plasma recursion and random source are not
 documented. `hald:N` is byte-identical to `magick hald:N -depth 8`
