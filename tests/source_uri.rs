@@ -258,6 +258,27 @@ fn ramp_2bit_returns_exact_quantised_codes() {
     }
 }
 
+#[test]
+fn hald_level_two_is_an_8x8_identity_cube() {
+    let reg = registry();
+    let mut src = open_frames(&reg, "generate://hald?level=2");
+    let frames = drain(&mut *src).unwrap();
+    assert_eq!(frames.len(), 1);
+    let Frame::Video(v) = &frames[0] else {
+        panic!();
+    };
+    let data = &v.planes[0].data;
+    assert_eq!(data.len(), 8 * 8 * 4);
+    let s = [0u8, 85, 170, 255];
+    for i in 0..64 {
+        assert_eq!(
+            &data[i * 4..i * 4 + 4],
+            &[s[i % 4], s[(i / 4) % 4], s[i / 16], 255],
+            "pixel {i}"
+        );
+    }
+}
+
 // ---------------------------- Video ----------------------------
 
 #[test]

@@ -190,8 +190,9 @@ fn image_filters_have_zero_input_ports() {
         "image.plasma",
         "image.noise",
         "image.ramp",
+        "image.hald",
     ] {
-        let params = serde_json::json!({"w": 8, "h": 8});
+        let params = serde_json::json!({"w": 8, "h": 8, "level": 2});
         let filter = ctx.filters.make(name, &params, &[]).unwrap();
         assert!(
             filter.input_ports().is_empty(),

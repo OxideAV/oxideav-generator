@@ -6,6 +6,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Added
+
+- `hald` image generator: identity Hald CLUT (`generate://hald?level=N`,
+  shorthand `hald:N`, filter `image.hald`). Level `N` gives an
+  `N³ × N³` image with `N²` samples per channel, red fastest; output is
+  byte-identical to `magick hald:N -depth 8` for every probed level.
+  Fractional levels truncate, levels below 2 select the default 8,
+  levels above 16 are refused (#7).
+
 ## [0.1.5](https://github.com/OxideAV/oxideav-generator/compare/v0.1.4...v0.1.5) - 2026-10-24
 
 ### Other

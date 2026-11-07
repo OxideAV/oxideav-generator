@@ -101,6 +101,7 @@ fn every_image_kind_is_byte_deterministic() {
         "generate://pattern?type=vstripes&w=8&h=8&size=2",
         "generate://grating?w=8&h=8&freq=2&angle=45",
         "generate://ramp?w=8&h=2&bits=3",
+        "generate://hald?level=3",
         "generate://fractal?type=mandelbrot&w=8&h=8&iter=16",
         "generate://fractal?type=julia&w=8&h=8&iter=16",
         "generate://plasma?w=8&h=8&seed=42",

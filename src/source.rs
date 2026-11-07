@@ -24,7 +24,9 @@ use oxideav_core::{
 use crate::audio::synth as audio_synth;
 #[cfg(feature = "label")]
 use crate::image::label;
-use crate::image::{Rgba8Image, fractal, gradient, grating, noise, pattern, plasma, ramp, xc};
+use crate::image::{
+    Rgba8Image, fractal, gradient, grating, hald, noise, pattern, plasma, ramp, xc,
+};
 use crate::video::{
     FrameSeq, colorwheel, fractal_zoom, gradient_animate, movingbox, scroll, smptebars, snow,
     testsrc, zoneplate,
@@ -67,6 +69,9 @@ pub fn open_generate_frames(uri: &str) -> Result<Box<dyn FrameSource>> {
             &parsed.query,
         )?))),
         "ramp" => Ok(Box::new(SingleImageFrameSource::new(ramp::render(
+            &parsed.query,
+        )?))),
+        "hald" => Ok(Box::new(SingleImageFrameSource::new(hald::render(
             &parsed.query,
         )?))),
         #[cfg(feature = "label")]

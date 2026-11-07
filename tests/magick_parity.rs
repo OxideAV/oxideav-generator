@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use oxideav_generator::image::{Rgba8Image, gradient, plasma};
+use oxideav_generator::image::{Rgba8Image, gradient, hald, plasma};
 
 fn magick_available() -> bool {
     match Command::new("magick").arg("-version").output() {
@@ -587,4 +587,30 @@ fn plasma_is_seed_reproducible_on_both_sides() {
         plasma::render(&q).unwrap().pixels,
         plasma::render(&q).unwrap().pixels
     );
+}
+
+#[test]
+fn hald_identity_clut_is_byte_identical() {
+    if !magick_available() {
+        return;
+    }
+    for level in ["2", "3", "4", "5", "8", "2.5", "1", "0"] {
+        let out = Command::new("magick")
+            .arg(format!("hald:{level}"))
+            .args(["-depth", "8", "rgba:-"])
+            .output()
+            .expect("spawn magick");
+        assert!(out.status.success());
+        let mut q = BTreeMap::new();
+        q.insert("level".to_string(), level.to_string());
+        let ours = hald::render(&q).unwrap();
+        assert_eq!(
+            out.stdout.len(),
+            ours.pixels.len(),
+            "hald:{level}: size differs ({}x{} ours)",
+            ours.width,
+            ours.height
+        );
+        assert!(out.stdout == ours.pixels, "hald:{level}: bytes differ");
+    }
 }

@@ -18,7 +18,8 @@ image basics (solid colour, linear / radial gradient,
 checkerboard, horizontal / vertical stripes, sinusoidal grating —
 single-frequency cos at a chosen orientation, per-channel quantised
 `ramp` at configurable 1–8-bit depth — the banding / dithering /
-bit-depth-conversion probe), procedural imagery
+bit-depth-conversion probe, identity Hald CLUT `hald` at level 2–16),
+procedural imagery
 (Mandelbrot + Julia fractals, plasma, Perlin + simplex gradient
 noise, value / lattice noise, Worley cellular noise), and video
 (classical broadcast `testsrc`, SMPTE colour bars, animated Mandelbrot
@@ -102,6 +103,7 @@ generate://grating?w=640&h=480&freq=8&angle=0&phase=0
 generate://grating?w=640&h=480&freq=16&angle=45&amplitude=0.7
 generate://ramp?w=256&h=64&bits=8                    # identity ramp: value(x) = x
 generate://ramp?bits=2&channel=r&direction=vertical  # 4-level red-only banding
+generate://hald?level=8                              # 512x512 identity Hald CLUT
 generate://fractal?type=mandelbrot&w=640&h=480&cx=-0.5&cy=0&zoom=2&iter=256
 generate://fractal?type=julia&w=640&h=480&cx=-0.7&cy=0.27&iter=256
 generate://plasma?w=640&h=480&seed=42
@@ -157,6 +159,7 @@ registry. Recognised prefixes:
 | `movingbox:`           | `generate://movingbox`                                       |
 | `snow:`                | `generate://snow`                                            |
 | `ramp:`                | `generate://ramp`                                            |
+| `hald:8`               | `generate://hald?level=8`                                    |
 | `noise:perlin`         | `generate://noise?type=perlin`                               |
 | `label:Hello world`    | `generate://label?text=Hello%20world` (needs `label` feature)|
 
@@ -232,7 +235,8 @@ the gradient vector's start pixel, while this crate renders the defined
 value. `plasma:c1-c2` / `plasma:fractal` match ImageMagick's
 statistics (gradient direction, noise spread, smoothness), not its
 pixels, because the plasma recursion and random source are not
-documented.
+documented. `hald:N` is byte-identical to `magick hald:N -depth 8`
+(levels 2–16; a level below 2 selects 8, fractions truncate).
 
 ## Determinism
 
@@ -240,7 +244,7 @@ All randomness is seeded — every generator that takes a `seed=` query
 parameter is bit-deterministic across builds. The whole catalogue is
 under a byte-determinism contract enforced by
 `tests/catalogue_determinism.rs`: every generator kind (28 synth
-types, 15 image forms, 11 video forms), opened twice with identical
+types, 16 image forms, 11 video forms), opened twice with identical
 parameters, must produce byte-identical audio PCM / video plane data. Defaults: `seed=42` for
 plasma / Perlin / simplex / value, `seed=0x12345678` for white / pink
 / brown noise. Perlin, simplex, and value all draw from the same

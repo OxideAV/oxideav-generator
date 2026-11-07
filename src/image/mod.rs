@@ -1,5 +1,5 @@
 //! Image generators (xc / gradient / pattern / fractal / plasma /
-//! noise / ramp).
+//! noise / ramp / hald).
 //!
 //! Each generator returns RGBA8 row-major bytes via [`Rgba8Image`].
 //! Frames flow straight to the pipeline as
@@ -9,6 +9,7 @@
 pub mod fractal;
 pub mod gradient;
 pub mod grating;
+pub mod hald;
 #[cfg(feature = "label")]
 pub mod label;
 pub mod noise;

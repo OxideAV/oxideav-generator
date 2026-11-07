@@ -29,6 +29,7 @@
 //! | `movingbox:`             | `generate://movingbox`                          |
 //! | `snow:`                  | `generate://snow`                               |
 //! | `ramp:`                  | `generate://ramp`                               |
+//! | `hald:8`                 | `generate://hald?level=8`                       |
 //! | `noise:perlin`           | `generate://noise?type=perlin`                  |
 //! | `label:Hello world`      | `generate://label?text=Hello%20world`           |
 //!
@@ -140,6 +141,13 @@ fn try_translate(input: &str) -> Option<String> {
             return Some("generate://ramp".to_string());
         }
         return Some(format!("generate://ramp?{rest}"));
+    }
+    if let Some(rest) = input.strip_prefix("hald:") {
+        let level = rest.trim();
+        if level.is_empty() {
+            return Some("generate://hald".to_string());
+        }
+        return Some(format!("generate://hald?level={}", encode(level)));
     }
     if let Some(rest) = input.strip_prefix("noise:") {
         if rest.is_empty() {
@@ -548,6 +556,13 @@ mod tests {
             translate("ramp:bits=2&channel=r&direction=vertical"),
             "generate://ramp?bits=2&channel=r&direction=vertical"
         );
+    }
+
+    #[test]
+    fn hald_bare_and_level() {
+        assert_eq!(translate("hald:"), "generate://hald");
+        assert_eq!(translate("hald:8"), "generate://hald?level=8");
+        assert_eq!(translate("hald: 4 "), "generate://hald?level=4");
     }
 
     #[test]

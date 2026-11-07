@@ -12,7 +12,7 @@
 //!    [`StreamFilter`](oxideav_core::StreamFilter) factory under the
 //!    `audio.synth`, `image.xc`, `image.gradient`, `image.pattern`,
 //!    `image.grating`, `image.fractal`, `image.plasma`, `image.noise`,
-//!    `image.ramp`,
+//!    `image.ramp`, `image.hald`,
 //!    `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
 //!    `video.gradient_animate`, `video.zoneplate`, `video.scroll`,
 //!    `video.colorwheel`, `video.movingbox`, `video.snow`
@@ -64,7 +64,9 @@
 //!   sinusoidal grating (single-frequency cos at a chosen orientation),
 //!   `ramp` (per-channel quantised gradient ramp at a configurable
 //!   `bits=1..=8` depth — exact integer level / code closed form, the
-//!   banding / dithering / bit-depth-conversion probe).
+//!   banding / dithering / bit-depth-conversion probe),
+//!   `hald` (identity Hald CLUT at level `N` — `N³ × N³`, byte-identical
+//!   to `magick hald:N -depth 8`).
 //! - **Procedural images** — Mandelbrot + Julia fractals, plasma
 //!   (recursive midpoint displacement; palette, ImageMagick-style
 //!   `plasma:c1-c2` two-colour and `plasma:fractal` random-corner
@@ -153,6 +155,7 @@ mod tests {
             "image.plasma",
             "image.noise",
             "image.ramp",
+            "image.hald",
             "video.testsrc",
             "video.smptebars",
             "video.fractal_zoom",
