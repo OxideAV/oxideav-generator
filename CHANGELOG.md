@@ -6,6 +6,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/OxideAV/oxideav-generator/compare/v0.1.5...v0.1.6) - 2026-11-07
+
+### Other
+
+- closest/farthest side and corner radial extents ([#7](https://github.com/OxideAV/oxideav-generator/pull/7))
+- identity Hald CLUT generator (hald:N) ([#7](https://github.com/OxideAV/oxideav-generator/pull/7))
+
 ### Added
 
 - `radial-gradient` extents measured from the radial centre:
