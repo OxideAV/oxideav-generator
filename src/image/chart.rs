@@ -284,7 +284,7 @@ impl ChartField {
         let dy = f64::from(y - r.y) - f64::from(r.h - 1) / 2.0;
         // Phase π r² / N, as a fraction of a turn: r² / 2N.
         let turns = (dx * dx + dy * dy) / (2.0 * f64::from(r.w.max(r.h)));
-        grey(0.5 + 0.5 * detmath::cos_sin_turns(turns).0)
+        grey(0.5 + 0.5 * detmath::cos_turns(turns))
     }
 
     fn patches(r: Region, x: u32) -> [f64; 4] {

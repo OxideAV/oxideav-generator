@@ -1598,6 +1598,15 @@ impl EncodeTable {
     }
 }
 
+/// The pad spread on a batch of parameters: clamp to `[0, 1]`, NaN as
+/// 0.
+#[inline]
+fn pad(t: &mut [f64]) {
+    for v in t.iter_mut() {
+        *v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+    }
+}
+
 /// A gradient as a [`Field`]: geometry + colour ramp + bounding box.
 /// Build with [`GradientOptions::field`].
 #[derive(Clone, Debug)]
@@ -1622,10 +1631,9 @@ impl GradientField {
     }
 
     /// Fill a row a batch at a time: the gradient parameters of up to
-    /// 256 pixels, clamped to `[0, 1]` (NaN as 0), are handed to
-    /// `shade` together with the pixels they belong to. For ramps whose
-    /// colour is a plain function of the clamped parameter
-    /// ([`ColorRamp::simple`]).
+    /// 256 pixels are computed in one flat loop per geometry and handed
+    /// to `shade` together with the pixels they belong to; pixels
+    /// outside the bounding box get `outside`.
     #[inline]
     fn batch_rows<P: Copy>(
         &self,
@@ -1633,7 +1641,7 @@ impl GradientField {
         x0: u32,
         out: &mut [P],
         outside: P,
-        shade: impl Fn(&[f64], &mut [P]),
+        shade: impl Fn(&mut [f64], &mut [P]),
     ) {
         const BATCH: usize = 256;
         let row = self.geometry.row_term(y);
@@ -1669,57 +1677,8 @@ impl GradientField {
                 g @ Geometry::Radial { .. } => parameters!(g),
                 g @ Geometry::Conic { .. } => parameters!(g),
             }
-            for v in t.iter_mut() {
-                *v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
-            }
             shade(t, chunk);
             first += chunk.len() as u32;
-        }
-    }
-
-    /// Fill a row with `shade(t)`, or `outside` beyond the bounding
-    /// box. The geometry is matched once per row so each arm is a
-    /// straight loop over `x`.
-    #[inline]
-    fn shade_row<P: Copy>(
-        &self,
-        y: u32,
-        x0: u32,
-        out: &mut [P],
-        outside: P,
-        shade: impl Fn(f64) -> P,
-    ) {
-        let row = self.geometry.row_term(y);
-        let (lo, hi) = match self.bbox {
-            None => (0, out.len()),
-            Some(b) => {
-                if y < b.y || y - b.y >= b.height {
-                    out.fill(outside);
-                    return;
-                }
-                let lo = (b.x.saturating_sub(x0) as usize).min(out.len());
-                let hi = ((b.x + b.width).saturating_sub(x0) as usize).min(out.len());
-                out[..lo].fill(outside);
-                out[hi..].fill(outside);
-                (lo, hi)
-            }
-        };
-        let span = &mut out[lo..hi];
-        let first = x0 + lo as u32;
-        // One copy of the loop per geometry: `t` inlines into it.
-        macro_rules! run {
-            ($geometry:expr) => {{
-                let g = $geometry;
-                for (i, o) in span.iter_mut().enumerate() {
-                    *o = shade(g.t(first + i as u32, row));
-                }
-            }};
-        }
-        match self.geometry {
-            g @ Geometry::Vector { .. } => run!(g),
-            g @ Geometry::Angle { .. } => run!(g),
-            g @ Geometry::Radial { .. } => run!(g),
-            g @ Geometry::Conic { .. } => run!(g),
         }
     }
 
@@ -1752,7 +1711,8 @@ impl Field for GradientField {
     fn fill_row(&self, y: u32, x0: u32, out: &mut [[f64; 4]]) {
         if let Some((c0, delta)) = self.ramp.simple() {
             self.batch_rows(y, x0, out, self.ramp.outside, |t, o| {
-                for (o, t) in o.iter_mut().zip(t) {
+                pad(t);
+                for (o, t) in o.iter_mut().zip(t.iter()) {
                     *o = [
                         c0[0] + delta[0] * t,
                         c0[1] + delta[1] * t,
@@ -1763,7 +1723,11 @@ impl Field for GradientField {
             });
             return;
         }
-        self.shade_row(y, x0, out, self.ramp.outside, |t| self.ramp.at(t));
+        self.batch_rows(y, x0, out, self.ramp.outside, |t, o| {
+            for (o, t) in o.iter_mut().zip(t.iter()) {
+                *o = self.ramp.at(*t);
+            }
+        });
     }
 
     fn fill_row_q16(&self, y: u32, x0: u32, out: &mut [[u16; 4]]) -> bool {
@@ -1781,7 +1745,8 @@ impl Field for GradientField {
                 out,
                 self.ramp.outside.map(canvas::unit_to_q16),
                 |t, o| {
-                    for (o, t) in o.iter_mut().zip(t) {
+                    pad(t);
+                    for (o, t) in o.iter_mut().zip(t.iter()) {
                         *o = [
                             canvas::unit_to_q16(c0[0] + delta[0] * t),
                             canvas::unit_to_q16(c0[1] + delta[1] * t),
@@ -1801,12 +1766,16 @@ impl Field for GradientField {
             return false;
         }
         let table = EncodeTable::get();
-        self.shade_row(
+        self.batch_rows(
             y,
             x0,
             out,
             self.ramp.outside.map(canvas::unit_to_q16),
-            |t| self.ramp.at_q16(t, table),
+            |t, o| {
+                for (o, t) in o.iter_mut().zip(t.iter()) {
+                    *o = self.ramp.at_q16(*t, table);
+                }
+            },
         );
         true
     }

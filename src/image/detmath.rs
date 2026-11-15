@@ -98,6 +98,44 @@ pub(crate) fn cos_sin_turns(turns: f64) -> (f64, f64) {
     }
 }
 
+/// Cosine of the angle `turns` full turns: the first component of
+/// [`cos_sin_turns`], bit for bit, evaluating only the one series the
+/// angle's octant needs.
+#[inline]
+pub(crate) fn cos_turns(turns: f64) -> f64 {
+    let t = turns - turns.floor();
+    let eighths = t * 8.0;
+    let octant = eighths.floor();
+    let frac = eighths - octant;
+    let index = octant as u32;
+    let odd = index & 1 == 1;
+    let x = (if odd { 1.0 - frac } else { frac }) * std::f64::consts::FRAC_PI_4;
+    let x2 = x * x;
+    let quadrant = index / 2;
+    // The cosine is ±cos x in the octants next to the x axis and
+    // ±sin x in those next to the y axis.
+    let wants_cos_series = (quadrant & 1 == 1) == odd;
+    let (cc, sc) = &COS_SIN_COEFFICIENTS;
+    let value = if wants_cos_series {
+        let mut c = cc[9];
+        for i in (0..9).rev() {
+            c = cc[i] + x2 * c;
+        }
+        c
+    } else {
+        let mut s = sc[9];
+        for i in (0..9).rev() {
+            s = sc[i] + x2 * s;
+        }
+        x * s
+    };
+    if quadrant == 1 || quadrant == 2 {
+        -value
+    } else {
+        value
+    }
+}
+
 /// Square root by the hardware operation (IEEE 754 requires it to be
 /// correctly rounded, so it is as portable as the four arithmetic
 /// operations).
@@ -136,6 +174,7 @@ mod tests {
         for i in 0..4000 {
             let t = f64::from(i) / 4000.0 * 3.0 - 1.0;
             let (c, s) = cos_sin_turns(t);
+            assert_eq!(cos_turns(t).to_bits(), c.to_bits(), "cos_turns({t})");
             let a = t * std::f64::consts::TAU;
             assert!((c - a.cos()).abs() < 3e-15, "cos {t}");
             assert!((s - a.sin()).abs() < 3e-15, "sin {t}");

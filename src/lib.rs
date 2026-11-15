@@ -54,6 +54,19 @@
 //!   (per-channel phase offset, degrees — channel `c` is rendered at
 //!   `phase + c·chphase`, the stereo / inter-channel-correlation
 //!   probe).
+//! - **Stills at any depth** — every still-image generator renders as
+//!   8-bit, 16-bit or float samples in grey, grey + alpha, RGB or RGBA,
+//!   optionally dithered, serially or in row bands under a
+//!   caller-granted thread budget ([`image::canvas`]); the 8-bit image
+//!   is the rounded deeper one. [`pseudo::PseudoImage`] builds a still
+//!   from a `name:arguments` specification, a size, defines and a seed.
+//! - **Gradients** — linear, radial and conic, two colours or a stop
+//!   list, `pad` / `repeat` / `reflect`, interpolated in sRGB, linear
+//!   light, Oklab, OkLCh, CIELAB or LCh(ab) ([`image::gradient`]).
+//! - **Random fields, patterns, charts** — seeded per-pixel noise in
+//!   seven distributions ([`image::random`]), a two-colour pattern set
+//!   ([`image::pattern`]), colour bars / staircase / ramp / zone plate /
+//!   bursts and a captioned composite ([`image::chart`]).
 //! - **Image basics** — solid colour (`xc`), linear / radial two-stop
 //!   gradients with the ImageMagick 7 `gradient:` / `radial-gradient:`
 //!   option surface (`direction` compass points, `angle`, `vector`,
