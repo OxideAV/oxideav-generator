@@ -31,6 +31,13 @@
 //! | `ramp:`                  | `generate://ramp`                               |
 //! | `hald:8`                 | `generate://hald?level=8`                       |
 //! | `noise:perlin`           | `generate://noise?type=perlin`                  |
+//! | `noise:gaussian`         | `generate://random?type=gaussian`               |
+//! | `random:poisson`         | `generate://random?type=poisson`                |
+//! | `canvas:red`             | `generate://xc?color=red`                       |
+//! | `conic-gradient:red-blue`| `generate://gradient?type=conic&from=red&to=blue` |
+//! | `gradient:red-white-blue`| `generate://gradient?stops=red,white,blue`      |
+//! | `pattern:bricks,size=16` | `generate://pattern?type=bricks&size=16`        |
+//! | `chart:bars`             | `generate://chart?type=bars`                    |
 //! | `label:Hello world`      | `generate://label?text=Hello%20world`           |
 //!
 //! Inputs that don't start with a recognised prefix pass through
@@ -52,23 +59,39 @@ fn try_translate(input: &str) -> Option<String> {
     if input.starts_with("generate://") {
         return None; // canonical form, leave alone
     }
-    if let Some(rest) = input.strip_prefix("xc:") {
-        return Some(format!("generate://xc?color={}", encode(rest)));
+    if let Some(rest) = input
+        .strip_prefix("xc:")
+        .or_else(|| input.strip_prefix("canvas:"))
+    {
+        let (color, extra) = split_query_suffix(rest);
+        return Some(typed("xc", "color", color, extra));
     }
     if let Some(rest) = input.strip_prefix("pattern:") {
-        if rest.is_empty() {
-            return Some("generate://pattern".to_string());
-        }
-        return Some(format!("generate://pattern?type={}", encode(rest)));
+        let (name, extra) = split_query_suffix(rest);
+        return Some(typed("pattern", "type", name, extra));
+    }
+    if let Some(rest) = input.strip_prefix("chart:") {
+        let (name, extra) = split_query_suffix(rest);
+        return Some(typed("chart", "type", name, extra));
+    }
+    if let Some(rest) = input.strip_prefix("random:") {
+        let (name, extra) = split_query_suffix(rest);
+        return Some(typed("random", "type", name, extra));
     }
     if let Some(rest) = input.strip_prefix("gradient:") {
-        return Some(translate_gradient(rest, false));
+        return Some(translate_gradient(rest, None));
     }
     if let Some(rest) = input
         .strip_prefix("radial-gradient:")
         .or_else(|| input.strip_prefix("radial:"))
     {
-        return Some(translate_gradient(rest, true));
+        return Some(translate_gradient(rest, Some("radial")));
+    }
+    if let Some(rest) = input
+        .strip_prefix("conic-gradient:")
+        .or_else(|| input.strip_prefix("conic:"))
+    {
+        return Some(translate_gradient(rest, Some("conic")));
     }
     if let Some(rest) = input.strip_prefix("plasma:") {
         return Some(translate_plasma(rest));
@@ -150,10 +173,20 @@ fn try_translate(input: &str) -> Option<String> {
         return Some(format!("generate://hald?level={}", encode(level)));
     }
     if let Some(rest) = input.strip_prefix("noise:") {
-        if rest.is_empty() {
-            return Some("generate://noise".to_string());
-        }
-        return Some(format!("generate://noise?type={}", encode(rest)));
+        let (name, extra) = split_query_suffix(rest);
+        // `noise:gaussian` and the other per-pixel distributions are
+        // the `random` generator; lattice / cellular kinds stay here.
+        let lattice = matches!(
+            name,
+            "" | "perlin" | "simplex" | "value" | "lattice" | "worley" | "cellular"
+        );
+        let per_pixel = crate::image::random::NoiseDistribution::parse(name).is_some();
+        let kind = if !lattice && per_pixel {
+            "random"
+        } else {
+            "noise"
+        };
+        return Some(typed(kind, "type", name, extra));
     }
     if let Some(rest) = input.strip_prefix("label:") {
         // Whole tail is the text — IM's `label:Hello, world!` includes
@@ -202,25 +235,62 @@ fn split_two_colours(spec: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// `red-blue` → `from=red&to=blue`, `red` → `from=red`. Allows an
+/// `generate://KIND?KEY=VALUE&EXTRA`, leaving out an empty value and
+/// an empty suffix.
+fn typed(kind: &str, key: &str, value: &str, extra: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !value.is_empty() {
+        parts.push(format!("{key}={}", encode(value)));
+    }
+    if let Some(e) = extra
+        && !e.is_empty()
+    {
+        parts.push(e.to_string());
+    }
+    if parts.is_empty() {
+        format!("generate://{kind}")
+    } else {
+        format!("generate://{kind}?{}", parts.join("&"))
+    }
+}
+
+/// Split on every `-` outside parentheses.
+fn split_colours(spec: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = spec;
+    while let Some(i) = find_outside_parens(rest, b'-') {
+        out.push(&rest[..i]);
+        rest = &rest[i + 1..];
+    }
+    out.push(rest);
+    out
+}
+
+/// `red-blue` → `from=red&to=blue`, `red` → `from=red`, three or more
+/// colours (`red-white-blue`) → `stops=red,white,blue`. Allows an
 /// optional explicit query suffix after a `,`: `red-blue,w=32&h=32`.
-fn translate_gradient(rest: &str, radial: bool) -> String {
+fn translate_gradient(rest: &str, kind: Option<&str>) -> String {
     let (palette, extra) = split_query_suffix(rest);
     let mut parts: Vec<String> = Vec::new();
-    if radial {
-        parts.push("type=radial".to_string());
+    if let Some(kind) = kind {
+        parts.push(format!("type={kind}"));
     }
-    match split_two_colours(palette) {
-        (from, Some(to)) => {
-            if !from.is_empty() {
-                parts.push(format!("from={}", encode(from)));
+    let colours = split_colours(palette);
+    if colours.len() >= 3 && colours.iter().all(|c| !c.is_empty()) {
+        parts.push(format!("stops={}", encode(&colours.join(","))));
+    } else {
+        match split_two_colours(palette) {
+            (from, Some(to)) => {
+                if !from.is_empty() {
+                    parts.push(format!("from={}", encode(from)));
+                }
+                if !to.is_empty() {
+                    parts.push(format!("to={}", encode(to)));
+                }
             }
-            if !to.is_empty() {
-                parts.push(format!("to={}", encode(to)));
-            }
+            (from, None) if !from.is_empty() => parts.push(format!("from={}", encode(from))),
+            _ => {}
         }
-        (from, None) if !from.is_empty() => parts.push(format!("from={}", encode(from))),
-        _ => {}
     }
     if let Some(e) = extra
         && !e.is_empty()

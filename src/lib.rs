@@ -96,6 +96,7 @@
 
 pub mod audio;
 pub mod image;
+pub mod pseudo;
 pub mod shorthand;
 pub mod source;
 pub mod video;

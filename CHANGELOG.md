@@ -49,6 +49,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   colour bars at a chosen level, grey staircase, ramp, zone plate,
   line bursts and a captioned composite, all defined on unit-range
   values.
+- `pseudo` module: `PseudoImage::parse("gradient:red-blue")` turns a
+  pseudo-image specification into a generator, with `with_size`,
+  `with_define("gradient:angle", "45")` (the `gradient:` option
+  vocabulary: `angle`, `vector`, `direction`, `extent`, `bounding-box`,
+  `center`, `radii`), `with_seed`, depth / layout / dither / thread
+  setters, `to_uri` and `render`.
+- Shorthands: `canvas:COLOUR`, `conic-gradient:`, `chart:TYPE`,
+  `random:TYPE`, `noise:gaussian` (and the other per-pixel
+  distributions), three or more colours in a gradient specification
+  (`gradient:red-white-blue`), and a `,key=value` suffix on `xc:` /
+  `pattern:` / `noise:`.
 - `Field::row_alias`: rows identical to an earlier row are copied, so
   periodic patterns, flat canvases and axis-aligned gradients cost a
   memory copy per row.

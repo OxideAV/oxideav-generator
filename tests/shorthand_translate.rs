@@ -37,6 +37,27 @@ fn all_shorthand_translations_round_trip() {
             "generate://scroll?pattern=plasma&vx=2&vy=-1",
         ),
         ("noise:perlin", "generate://noise?type=perlin"),
+        ("noise:", "generate://noise"),
+        ("noise:gaussian", "generate://random?type=gaussian"),
+        ("random:poisson", "generate://random?type=poisson"),
+        ("random:", "generate://random"),
+        ("canvas:red", "generate://xc?color=red"),
+        ("xc:red,w=8&h=8", "generate://xc?color=red&w=8&h=8"),
+        (
+            "conic-gradient:red-blue",
+            "generate://gradient?type=conic&from=red&to=blue",
+        ),
+        (
+            "gradient:red-white-blue",
+            "generate://gradient?stops=red,white,blue",
+        ),
+        (
+            "pattern:bricks,size=16",
+            "generate://pattern?type=bricks&size=16",
+        ),
+        ("pattern:", "generate://pattern"),
+        ("chart:bars", "generate://chart?type=bars"),
+        ("chart:", "generate://chart"),
     ];
     for (input, want) in cases {
         let got = translate(input);
