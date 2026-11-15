@@ -8,7 +8,7 @@ use oxideav_core::Result;
 
 use super::Rgba8Image;
 use super::canvas::{self, Image, RenderConfig, SolidField};
-use super::palette::parse_color;
+use super::palette::parse_color_unit;
 use crate::source::{q_str, q_u32};
 
 /// The canvas as a [`SolidField`]: `w`, `h`, `color`.
@@ -16,7 +16,7 @@ pub fn field(query: &BTreeMap<String, String>) -> Result<SolidField> {
     Ok(SolidField {
         width: q_u32(query, "w", 640)?.max(1),
         height: q_u32(query, "h", 480)?.max(1),
-        color: parse_color(q_str(query, "color", "black"))?.map(|v| f64::from(v) / 255.0),
+        color: parse_color_unit(q_str(query, "color", "black"))?,
     })
 }
 
@@ -82,6 +82,18 @@ mod tests {
                 .all(|p| p == [0.2, 0.4, 0.6])
         );
         assert_eq!(q(&[]), q(&[("threads", "4")]));
+        // A 16-bit hex colour is exact at 16 bits and rounds at 8.
+        let deep = render_image(&map(&[
+            ("color", "#123456789abc"),
+            ("w", "2"),
+            ("h", "1"),
+            ("depth", "16"),
+            ("channels", "rgb"),
+        ]))
+        .unwrap();
+        assert_eq!(deep.as_u16().unwrap()[..3], [0x1234, 0x5678, 0x9abc]);
+        let low = render(&map(&[("color", "#123456789abc"), ("w", "1"), ("h", "1")])).unwrap();
+        assert_eq!(low.get(0, 0), [0x12, 0x56, 0x9a, 255]);
         assert_eq!(q(&[("dither", "noise")]), q(&[]));
     }
 }

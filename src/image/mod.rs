@@ -74,6 +74,9 @@ impl Rgba8Image {
 /// is 8-bit RGBA. Gradients are evaluated at full precision in every
 /// depth; generators that are defined on 8-bit levels are widened.
 pub fn render_still(kind: &str, query: &BTreeMap<String, String>) -> Option<Result<canvas::Image>> {
+    if let Err(e) = check_canvas_size(query) {
+        return Some(Err(e));
+    }
     let widen = |img: Result<Rgba8Image>| -> Result<canvas::Image> {
         let cfg = canvas::RenderConfig::from_query(query)?;
         Ok(canvas::convert_rgba8(img?, &cfg))
@@ -117,4 +120,27 @@ pub(crate) fn frame_format(img: &canvas::Image) -> Result<oxideav_core::PixelFor
                 .into(),
         )
     })
+}
+
+/// Largest canvas a query may ask for, in pixels (2²⁸ ≈ 268 megapixels,
+/// 16 384 × 16 384). A larger request is refused up front instead of
+/// failing inside an allocation.
+pub const MAX_PIXELS: u64 = 1 << 28;
+
+/// Refuse a `w` × `h` beyond [`MAX_PIXELS`]. Unparsable sizes are left
+/// to the generator's own error.
+fn check_canvas_size(query: &BTreeMap<String, String>) -> Result<()> {
+    let dim = |key: &str, default: u64| {
+        query
+            .get(key)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(default)
+    };
+    let (w, h) = (dim("w", 640), dim("h", 480));
+    if w.saturating_mul(h) > MAX_PIXELS {
+        return Err(Error::invalid(format!(
+            "canvas {w}x{h} exceeds the {MAX_PIXELS}-pixel limit"
+        )));
+    }
+    Ok(())
 }

@@ -37,7 +37,7 @@ use oxideav_core::{Error, Result};
 
 use super::Rgba8Image;
 use super::canvas::{self, Field, Image, RenderConfig, dispersed_dot};
-use super::palette::parse_color;
+use super::palette::parse_color_unit;
 use crate::source::{q_str, q_u32};
 
 /// Pattern geometry (see the module table).
@@ -175,10 +175,9 @@ impl PatternField {
         if query.contains_key("line") {
             f = f.with_line(q_u32(query, "line", 1)?);
         }
-        let unit = |c: [u8; 4]| c.map(|v| f64::from(v) / 255.0);
         Ok(f.with_colors(
-            unit(parse_color(q_str(query, "color1", "black"))?),
-            unit(parse_color(q_str(query, "color2", "white"))?),
+            parse_color_unit(q_str(query, "color1", "black"))?,
+            parse_color_unit(q_str(query, "color2", "white"))?,
         ))
     }
 

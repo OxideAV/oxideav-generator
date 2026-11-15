@@ -17,6 +17,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   sRGB transfer function is an exact table at integer depths; lattice
   noise is separable per octave; plasma skips the grid cells that
   cannot reach the canvas.
+- 16-bit hex colours (`#RRRRGGGGBBBB`, `#RRRRGGGGBBBBAAAA`) keep all
+  16 bits in gradient stops, solid colours, pattern colours and the
+  random base colour (`palette::parse_color_unit`); they used to be
+  rounded to 8 bits before any use.
+- Still images larger than 2²⁸ pixels (`image::MAX_PIXELS`) are refused
+  with an error instead of failing inside an allocation.
 - `plasma` takes `threads=` (`PlasmaOptions::with_threads`): the three
   channel displacement fields are computed side by side.
 - The crate depends on `oxideav-pixfmt` for colour models.

@@ -142,7 +142,7 @@ use oxideav_pixfmt::colorspace::{
 
 use super::Rgba8Image;
 use super::canvas::{self, Field, Image, RenderConfig};
-use super::palette::parse_color;
+use super::palette::{parse_color, parse_color_unit};
 use crate::source::{q_f64, q_str, q_u32};
 
 /// Compass direction of a linear gradient (ImageMagick
@@ -527,9 +527,9 @@ impl GradientStop {
         if let Some(i) = split
             && let Some(offset) = number(s[i + 1..].trim())
         {
-            return Ok(Self::from_rgba8(parse_color(&s[..i])?).with_offset(offset));
+            return Ok(Self::new(parse_color_unit(&s[..i])?).with_offset(offset));
         }
-        Ok(Self::from_rgba8(parse_color(s)?))
+        Ok(Self::new(parse_color_unit(s)?))
     }
 
     /// Parse a `,` or `;` separated stop list (separators inside
@@ -816,6 +816,15 @@ impl GradientOptions {
         }
         if let Some(list) = query.get("stops") {
             opts.stops = GradientStop::parse_list(list)?;
+        } else {
+            // Colours written with more than 8 bits (16-bit hex) keep
+            // their precision as an explicit two-stop list.
+            let from = parse_color_unit(q_str(query, "from", "white"))?;
+            let to = parse_color_unit(q_str(query, "to", "black"))?;
+            let unit = |c: [u8; 4]| c.map(|v| f64::from(v) / 255.0);
+            if from != unit(opts.from) || to != unit(opts.to) {
+                opts.stops = vec![GradientStop::new(from), GradientStop::new(to)];
+            }
         }
         if let Some(sp) = query.get("spread") {
             opts.spread = GradientSpread::parse(sp).ok_or_else(|| {
@@ -3205,5 +3214,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sixteen_bit_hex_stops_keep_their_precision() {
+        let q = map(&[
+            ("from", "#000100020003"),
+            ("to", "#fffefffdfffc"),
+            ("direction", "East"),
+            ("w", "2"),
+            ("h", "1"),
+            ("depth", "16"),
+            ("channels", "rgb"),
+        ]);
+        let img = render_image(&q).unwrap();
+        assert_eq!(img.as_u16().unwrap(), &[1, 2, 3, 0xfffe, 0xfffd, 0xfffc]);
+        let stops = GradientStop::parse_list("#0000ffff8000 25%, #ffff").unwrap();
+        assert_eq!(stops[0].color, [0.0, 1.0, 32768.0 / 65535.0, 1.0]);
+        assert_eq!(stops[0].offset, Some(0.25));
+        // 8-bit colours stay in `from` / `to`.
+        let plain =
+            GradientOptions::from_query(&map(&[("from", "red"), ("to", "#0000ff")])).unwrap();
+        assert!(plain.stops.is_empty());
     }
 }

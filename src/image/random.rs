@@ -43,7 +43,7 @@ use oxideav_core::{Error, Result};
 
 use super::canvas::{self, Field, Image, RenderConfig};
 use super::detmath;
-use super::palette::parse_color;
+use super::palette::parse_color_unit;
 use crate::source::{q_f64, q_str, q_u32};
 use crate::video::snow::mix;
 
@@ -184,7 +184,7 @@ impl RandomOptions {
             ))
         })?;
         if let Some(c) = query.get("color") {
-            o.base = parse_color(c)?.map(|v| f64::from(v) / 255.0);
+            o.base = parse_color_unit(c)?;
         }
         if query.contains_key("amount") {
             let a = q_f64(query, "amount", 0.0)?;

@@ -48,6 +48,28 @@ pub fn parse_color(s: &str) -> Result<[u8; 4]> {
     Err(Error::invalid(format!("color: unknown colour {trimmed:?}")))
 }
 
+/// Parse a colour string into unit-range `[r, g, b, a]` floats at the
+/// precision it was written with.
+///
+/// Accepts exactly what [`parse_color`] accepts. The 16-bit hex forms
+/// `#RRRRGGGGBBBB` and `#RRRRGGGGBBBBAAAA` keep all 16 bits
+/// (`v / 65535`); every other form is its 8-bit value over 255, so a
+/// colour that [`parse_color`] reads as `[r, g, b, a]` comes back as
+/// those four bytes divided by 255.
+pub fn parse_color_unit(s: &str) -> Result<[f64; 4]> {
+    let bytes = parse_color(s)?;
+    let hex = s.trim().strip_prefix('#').unwrap_or("");
+    if (hex.len() == 12 || hex.len() == 16) && hex.is_ascii() {
+        let word = |i: usize| -> f64 {
+            // `parse_color` has already validated the digits.
+            f64::from(u16::from_str_radix(&hex[4 * i..4 * i + 4], 16).unwrap_or(0)) / 65535.0
+        };
+        let alpha = if hex.len() == 16 { word(3) } else { 1.0 };
+        return Ok([word(0), word(1), word(2), alpha]);
+    }
+    Ok(bytes.map(|v| f64::from(v) / 255.0))
+}
+
 /// `gray0` … `gray100` / `grey0` … `grey100`. Anything else (no digits,
 /// above 100, leading `+`, …) is `None` so the caller falls through to
 /// its own error.
@@ -525,5 +547,34 @@ mod tests {
         let dark_lum = (p[0][0] as u32 + p[0][1] as u32 + p[0][2] as u32) / 3;
         let bright_lum = (p[255][0] as u32 + p[255][1] as u32 + p[255][2] as u32) / 3;
         assert!(dark_lum < bright_lum);
+    }
+
+    #[test]
+    fn unit_parse_keeps_sixteen_bit_hex_and_matches_the_byte_parse_elsewhere() {
+        assert_eq!(
+            parse_color_unit("#00008000ffff").unwrap(),
+            [0.0, 32768.0 / 65535.0, 1.0, 1.0]
+        );
+        assert_eq!(
+            parse_color_unit(" #ffff000000014000 ").unwrap(),
+            [1.0, 0.0, 1.0 / 65535.0, 16384.0 / 65535.0]
+        );
+        for c in [
+            "red",
+            "#abc",
+            "#336699cc",
+            "rgba(255,0,0,0.5)",
+            "hsl(120,50%,50%)",
+            "gray50",
+        ] {
+            let bytes = parse_color(c).unwrap();
+            assert_eq!(
+                parse_color_unit(c).unwrap(),
+                bytes.map(|v| f64::from(v) / 255.0)
+            );
+        }
+        assert!(parse_color_unit("#12345").is_err());
+        assert!(parse_color_unit("#gggghhhhiiii").is_err());
+        assert!(parse_color_unit("nocolour").is_err());
     }
 }
