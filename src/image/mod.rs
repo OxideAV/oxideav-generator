@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use oxideav_core::{Error, Result};
 
 pub mod canvas;
+pub mod chart;
 mod detmath;
 pub mod fractal;
 pub mod gradient;
@@ -63,7 +64,7 @@ impl Rgba8Image {
 
 /// Render the still-image generator `kind` (`xc`, `gradient`,
 /// `radial-gradient`, `conic-gradient`, `pattern`, `grating`, `ramp`,
-/// `hald`, `label`, `fractal`, `plasma`, `noise`, `random`) from a
+/// `hald`, `label`, `fractal`, `plasma`, `noise`, `random`, `chart`) from a
 /// `generate://`
 /// query. Returns `None` when `kind` is not a still-image generator.
 ///
@@ -83,11 +84,11 @@ pub fn render_still(kind: &str, query: &BTreeMap<String, String>) -> Option<Resu
         gradient::render_image(&q)
     };
     Some(match kind {
-        "xc" => widen(xc::render(query)),
+        "xc" => xc::render_image(query),
         "gradient" => gradient::render_image(query),
         "radial-gradient" | "radial_gradient" | "radial" => typed_gradient("radial"),
         "conic-gradient" | "conic_gradient" | "conic" => typed_gradient("conic"),
-        "pattern" => widen(pattern::render(query)),
+        "pattern" => pattern::render_image(query),
         "grating" => widen(grating::render(query)),
         "ramp" => widen(ramp::render(query)),
         "hald" => widen(hald::render(query)),
@@ -101,6 +102,7 @@ pub fn render_still(kind: &str, query: &BTreeMap<String, String>) -> Option<Resu
         "plasma" => plasma::render_image(query),
         "noise" => noise::render_image(query),
         "random" => random::render_image(query),
+        "chart" => chart::render_image(query),
         _ => return None,
     })
 }

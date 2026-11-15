@@ -40,6 +40,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 - `plasma` at 16-bit / float keeps the fractional part of the
   displacement (`PlasmaField`); its 8-bit rounding is the existing
   output.
+- `pattern`: `right45`, `left45`, `crosshatch`, `crosshatch45`,
+  `bricks`, `verticalbricks`, `dots`, `circles`, `horizontalsaw`,
+  `verticalsaw` and the ordered fills `gray0` … `gray100`, with
+  `line=` thickness; every pattern is an integer predicate
+  (`PatternField`), exact at any depth.
+- `chart` image generator (`generate://chart`, filter `image.chart`):
+  colour bars at a chosen level, grey staircase, ramp, zone plate,
+  line bursts and a captioned composite, all defined on unit-range
+  values.
+- `Field::row_alias`: rows identical to an earlier row are copied, so
+  periodic patterns, flat canvases and axis-aligned gradients cost a
+  memory copy per row.
 - `tests/pinned_bytes.rs`: hashes of the 0.1.6 8-bit output of every
   still generator, so rendering refactors cannot change published
   pixels.

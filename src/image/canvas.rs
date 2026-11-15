@@ -37,8 +37,8 @@
 //!   rectangular `u₁ − ½`, which the range ends cannot clip.
 //!
 //! Both keep the mean of a flat area equal to its true value, and a
-//! value that already sits on an output level is left on it by the
-//! ordered dither. The same offset is applied to every channel of a
+//! value that already sits on an output level is left on it (there is
+//! no rounding error to spread). The same offset is applied to every channel of a
 //! pixel, so neutral greys stay neutral. Dithering never touches float
 //! output.
 //!
@@ -426,10 +426,12 @@ pub trait Field: Sync {
         None
     }
 
-    /// `true` when every row equals row 0 (the colour depends on `x`
-    /// only); the driver then renders one row and replicates it.
-    fn rows_repeat(&self) -> bool {
-        false
+    /// `Some(y′)`, `y′ < y`, when row `y` is pixel-for-pixel identical
+    /// to row `y′` (a pattern periodic in `y`, a colour that depends on
+    /// `x` only, a flat canvas). When row `y′` was rendered in the same
+    /// band the driver copies it instead of evaluating row `y`.
+    fn row_alias(&self, _y: u32) -> Option<u32> {
+        None
     }
 
     /// Optional integer fast path: write the 16-bit quantised colours
@@ -589,6 +591,13 @@ const fn dispersed_dot_8() -> [[u8; 8]; 8] {
 
 static DISPERSED_DOT_8: [[u8; 8]; 8] = dispersed_dot_8();
 
+/// Entry `M₈[y mod 8][x mod 8]` (0–63) of the 8 × 8 dispersed-dot
+/// index matrix.
+#[inline]
+pub fn dispersed_dot(x: u32, y: u32) -> u8 {
+    DISPERSED_DOT_8[(y & 7) as usize][(x & 7) as usize]
+}
+
 /// The dither offsets of one pixel, in output-level units.
 #[derive(Clone, Copy)]
 struct DitherOffset {
@@ -604,6 +613,12 @@ impl DitherOffset {
     /// Round `x` (in levels, `0..=max`) with the offset applied.
     #[inline]
     fn apply(self, x: f64, max: f64) -> f64 {
+        // A value that already sits on a level has no rounding error
+        // to spread.
+        let nearest = x.round();
+        if (x - nearest).abs() < 1e-9 {
+            return nearest;
+        }
         let d = if x < 0.5 || x > max - 0.5 {
             self.narrow
         } else {
@@ -722,17 +737,6 @@ fn drive<T: Sample>(field: &dyn Field, cfg: &RenderConfig, y0: u32, rows: u32, o
     if row_len == 0 || rows == 0 {
         return;
     }
-    let dithered = T::INTEGER && cfg.dither != Dither::None;
-
-    // Rows that are all alike: render the first, replicate the rest.
-    if field.rows_repeat() && !dithered {
-        let (first, rest) = out.split_at_mut(row_len);
-        drive_rows(field, cfg, y0, first);
-        for chunk in rest.chunks_exact_mut(row_len) {
-            chunk.copy_from_slice(first);
-        }
-        return;
-    }
 
     let threads = cfg.threads.max(1).min(rows as usize);
     if threads == 1 {
@@ -763,8 +767,19 @@ fn drive_rows<T: Sample>(field: &dyn Field, cfg: &RenderConfig, y0: u32, out: &m
     } else {
         Vec::new()
     };
-    for (i, row_out) in out.chunks_exact_mut(row_len).enumerate() {
+    for i in 0..out.len() / row_len {
         let y = y0 + i as u32;
+        let (done, rest) = out.split_at_mut(i * row_len);
+        let row_out = &mut rest[..row_len];
+        if !dithered
+            && let Some(src) = field.row_alias(y)
+            && src >= y0
+            && src < y
+        {
+            let from = (src - y0) as usize * row_len;
+            row_out.copy_from_slice(&done[from..from + row_len]);
+            continue;
+        }
         if !dithered && let Some(c) = field.uniform_row(y) {
             pack_row(&[c], &mut row_out[..n], cfg.channels, Dither::None, 0, 0, y);
             let (first, rest) = row_out.split_at_mut(n);
@@ -791,6 +806,33 @@ fn drive_rows<T: Sample>(field: &dyn Field, cfg: &RenderConfig, y0: u32, out: &m
             0,
             y,
         );
+    }
+}
+
+/// A single colour everywhere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SolidField {
+    pub width: u32,
+    pub height: u32,
+    /// Straight-alpha sRGB-encoded `[r, g, b, a]`, unit range.
+    pub color: [f64; 4],
+}
+
+impl Field for SolidField {
+    fn width(&self) -> u32 {
+        self.width
+    }
+    fn height(&self) -> u32 {
+        self.height
+    }
+    fn fill_row(&self, _y: u32, _x0: u32, out: &mut [[f64; 4]]) {
+        out.fill(self.color);
+    }
+    fn uniform_row(&self, _y: u32) -> Option<[f64; 4]> {
+        Some(self.color)
+    }
+    fn row_alias(&self, y: u32) -> Option<u32> {
+        y.checked_sub(1)
     }
 }
 

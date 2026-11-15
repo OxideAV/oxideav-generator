@@ -1472,8 +1472,12 @@ impl Field for GradientField {
         }
     }
 
-    fn rows_repeat(&self) -> bool {
-        self.bbox.is_none() && self.constant_along_y()
+    fn row_alias(&self, y: u32) -> Option<u32> {
+        if self.bbox.is_none() && self.constant_along_y() {
+            y.checked_sub(1)
+        } else {
+            None
+        }
     }
 }
 
