@@ -590,6 +590,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rendered_rows_equal_the_per_pixel_definition() {
+        // Copied rows (bands that are constant down their columns) must
+        // be indistinguishable from evaluating every pixel.
+        for kind in [
+            ChartKind::Bars,
+            ChartKind::Steps,
+            ChartKind::Ramp,
+            ChartKind::ZonePlate,
+            ChartKind::Bursts,
+            ChartKind::Composite,
+        ] {
+            for (w, h) in [(97u32, 83u32), (5, 3), (1, 1), (200, 7)] {
+                let f = ChartField::new(w, h, kind);
+                let img = canvas::render(&f, &RenderConfig::new().with_depth(SampleDepth::F32));
+                for y in 0..h {
+                    for x in 0..w {
+                        let want = f.base(x, y).map(|v| f64::from(v as f32));
+                        assert_eq!(img.pixel(x, y), want, "{kind:?} {w}x{h} at ({x}, {y})");
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "label")]
     #[test]
     fn captions_mark_only_their_boxes() {
