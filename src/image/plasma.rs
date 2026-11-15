@@ -166,13 +166,15 @@ impl PlasmaOptions {
     /// `generate://plasma?…`: `w`, `h`, `seed`, `roughness`,
     /// `amplitude`, `type=palette|gradient|fractal`, `from`, `to`, and
     /// every `gradient:` define accepted by
-    /// [`GradientOptions::from_query`]. Giving `from` or `to` without
-    /// a `type` selects gradient mode; `plasma:red` (only `from`) runs
+    /// [`GradientOptions::from_query`]. Giving `from`, `to` or `stops`
+    /// without a `type` selects gradient mode; `plasma:red` (only `from`) runs
     /// to black like ImageMagick.
     pub fn from_query(query: &BTreeMap<String, String>) -> Result<Self> {
         let w = q_u32(query, "w", 640)?.max(2);
         let h = q_u32(query, "h", 480)?.max(2);
-        let has_colors = query.contains_key("from") || query.contains_key("to");
+        let has_colors = ["from", "to", "stops"]
+            .iter()
+            .any(|k| query.contains_key(*k));
         let kind = match query.get("type") {
             Some(t) => PlasmaKind::parse(t).ok_or_else(|| {
                 Error::invalid(format!(

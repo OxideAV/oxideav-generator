@@ -494,6 +494,29 @@ mod tests {
     }
 
     #[test]
+    fn plasma_over_a_stop_list() {
+        let spec = PseudoImage::parse_sized("plasma:red-lime-blue", 48, 48)
+            .unwrap()
+            .with_seed(2);
+        assert_eq!(spec.kind(), "plasma");
+        assert_eq!(spec.query()["stops"], "red,lime,blue");
+        let img = spec.render().unwrap();
+        let mean = |rows: std::ops::Range<u32>, c: usize| {
+            let mut sum = 0.0;
+            for y in rows.clone() {
+                for x in 0..48 {
+                    sum += img.pixel(x, y)[c];
+                }
+            }
+            sum / (f64::from(rows.end - rows.start) * 48.0)
+        };
+        // Red at the top, green in the middle, blue at the bottom.
+        assert!(mean(0..6, 0) > 0.6 && mean(0..6, 2) < 0.3);
+        assert!(mean(21..27, 1) > 0.6);
+        assert!(mean(42..48, 2) > 0.6 && mean(42..48, 0) < 0.3);
+    }
+
+    #[test]
     fn hald_patterns_noise_and_charts_resolve() {
         let hald = render("hald:3", 1, 1).unwrap();
         assert_eq!((hald.width, hald.height), (27, 27));

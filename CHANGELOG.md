@@ -78,9 +78,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   setters, `to_uri` and `render`.
 - Shorthands: `canvas:COLOUR`, `conic-gradient:`, `chart:TYPE`,
   `random:TYPE`, `noise:gaussian` (and the other per-pixel
-  distributions), three or more colours in a gradient specification
-  (`gradient:red-white-blue`), and a `,key=value` suffix on `xc:` /
-  `pattern:` / `noise:`.
+  distributions), three or more colours in a gradient or plasma
+  specification (`gradient:red-white-blue`, `plasma:red-lime-blue`),
+  and a `,key=value` suffix on `xc:` / `pattern:` / `noise:`.
 - `Field::row_alias`: rows identical to an earlier row are copied, so
   periodic patterns, flat canvases and axis-aligned gradients cost a
   memory copy per row.

@@ -306,7 +306,8 @@ fn translate_gradient(rest: &str, kind: Option<&str>) -> String {
 
 /// `plasma:` → bare; `plasma:fractal` → `type=fractal`; `plasma:42`
 /// (digits only) → `seed=42` (historical form); `plasma:red-blue` /
-/// `plasma:red` → `from=red&to=blue` / `from=red`. Like `gradient:`,
+/// `plasma:red` → `from=red&to=blue` / `from=red`; three or more
+/// colours become `stops=`. Like `gradient:`,
 /// an optional `,k=v&…` suffix is appended verbatim.
 fn translate_plasma(rest: &str) -> String {
     let (spec, extra) = split_query_suffix(rest);
@@ -316,17 +317,22 @@ fn translate_plasma(rest: &str) -> String {
     } else if !spec.is_empty() && spec.bytes().all(|b| b.is_ascii_digit()) {
         parts.push(format!("seed={spec}"));
     } else {
-        match split_two_colours(spec) {
-            (from, Some(to)) => {
-                if !from.is_empty() {
-                    parts.push(format!("from={}", encode(from)));
+        let colours = split_colours(spec);
+        if colours.len() >= 3 && colours.iter().all(|c| !c.is_empty()) {
+            parts.push(format!("stops={}", encode(&colours.join(","))));
+        } else {
+            match split_two_colours(spec) {
+                (from, Some(to)) => {
+                    if !from.is_empty() {
+                        parts.push(format!("from={}", encode(from)));
+                    }
+                    if !to.is_empty() {
+                        parts.push(format!("to={}", encode(to)));
+                    }
                 }
-                if !to.is_empty() {
-                    parts.push(format!("to={}", encode(to)));
-                }
+                (from, None) if !from.is_empty() => parts.push(format!("from={}", encode(from))),
+                _ => {}
             }
-            (from, None) if !from.is_empty() => parts.push(format!("from={}", encode(from))),
-            _ => {}
         }
     }
     if let Some(e) = extra
