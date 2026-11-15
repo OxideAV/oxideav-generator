@@ -6,6 +6,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/OxideAV/oxideav-generator/compare/v0.1.6...v0.1.7) - 2026-11-15
+
+### Other
+
+- chart rows rendered through the row-copy path equal the per-pixel definition
+- iterate the per-octave column tables directly (clippy 1.100 needless_range_loop)
+- three or more colours in a specification become a stop list
+- throughput table re-measured on the final tree
+- ellipse form of the side / corner radial extents (shape=ellipse); black-box parity cases for the rotated radial ellipse
+- pin platform-independent stills everywhere, library-math stills on the reference platform; table test no longer assumes a monotone platform power function
+- describe the gradient option surface by its own vocabulary; SolidField::new; hide two helper functions from the public docs
+- one batched row path for every ramp; chart: single-series cosine; crate docs list the new generators
+- 16-bit hex colours at full precision; canvas size limit; front-end robustness tests
+- still-image rendering — copied rows, batched two-colour ramps, exact transfer table, separable lattice noise, reach-limited plasma
+- pseudo-image specification front-end ([#7](https://github.com/OxideAV/oxideav-generator/pull/7))
+- pattern set, test charts, solid field; rows identical to an earlier row are copied ([#7](https://github.com/OxideAV/oxideav-generator/pull/7))
+- seeded random fields, noise colour ramps and octave controls, deep plasma ([#7](https://github.com/OxideAV/oxideav-generator/pull/7))
+- sample depths, channel layouts and dithering for every still; multi-stop, conic and perceptual-space gradients ([#7](https://github.com/OxideAV/oxideav-generator/pull/7))
+
 ### Changed
 
 - Still-image throughput (1920 × 1080, serial, 8-bit RGBA, output
