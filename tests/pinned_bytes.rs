@@ -5,6 +5,14 @@
 //! by a single byte fails here, so refactors and speed-ups of the
 //! rendering paths cannot silently change published pixels. New
 //! generators are pinned from the release that introduced them.
+//!
+//! Two lists: [`PINS`] holds generators built from `+ − × ÷ √` and
+//! integer arithmetic only, whose bytes are the same on every
+//! platform. [`PINS_LIBRARY_MATH`] holds the ones that call the
+//! platform's `cos` or power function (the sinusoidal grating, the
+//! linear-light gradients); those are compared only on the platform
+//! the reference build ran on, since another C library may round a
+//! value sitting on a tie the other way.
 
 use oxideav_core::{Frame, SourceOutput, SourceRegistry};
 
@@ -17,7 +25,7 @@ fn fnv(bytes: &[u8]) -> u64 {
     h
 }
 
-/// `(uri, hash of the 0.1.6 output)`.
+/// `(uri, hash of the 0.1.6 output)`, platform-independent arithmetic.
 const PINS: &[(&str, u64)] = &[
     (
         "generate://xc?color=%23336699cc&w=64&h=48",
@@ -40,10 +48,6 @@ const PINS: &[(&str, u64)] = &[
         0xa8efd9873993e555,
     ),
     (
-        "generate://gradient?from=red&to=blue&angle=30&colorspace=linear&w=64&h=48",
-        0x419d8f1604204601,
-    ),
-    (
         "generate://gradient?from=rgba(255,0,0,0.5)&to=blue&vector=5,7,50,40&w=64&h=48",
         0xadeda28baed56266,
     ),
@@ -60,10 +64,6 @@ const PINS: &[(&str, u64)] = &[
         0x2ad8473646cf8f15,
     ),
     (
-        "generate://radial-gradient?from=red&to=blue&center=20,10&radii=30,12&colorspace=linear&w=64&h=48",
-        0x60442bb2c33882f0,
-    ),
-    (
         "generate://radial-gradient?extent=farthest-corner&center=12,40&w=64&h=48",
         0x83af8d54512df8a0,
     ),
@@ -78,10 +78,6 @@ const PINS: &[(&str, u64)] = &[
     (
         "generate://pattern?type=vstripes&w=64&h=48&size=7",
         0x1b7c141a165ce325,
-    ),
-    (
-        "generate://grating?w=64&h=48&freq=4&angle=30",
-        0x9291c824c183aaa1,
     ),
     ("generate://ramp?w=64&h=8&bits=5", 0x372105d6b5cc6965),
     ("generate://hald?level=3", 0xfddbd5578c4ef368),
@@ -128,11 +124,27 @@ const PINS: &[(&str, u64)] = &[
     ),
 ];
 
-#[test]
-fn eight_bit_stills_match_the_release_pins() {
+/// `(uri, hash of the 0.1.6 output)` for generators that go through
+/// the platform's math library (reference: macOS on aarch64).
+const PINS_LIBRARY_MATH: &[(&str, u64)] = &[
+    (
+        "generate://gradient?from=red&to=blue&angle=30&colorspace=linear&w=64&h=48",
+        0x419d8f1604204601,
+    ),
+    (
+        "generate://radial-gradient?from=red&to=blue&center=20,10&radii=30,12&colorspace=linear&w=64&h=48",
+        0x60442bb2c33882f0,
+    ),
+    (
+        "generate://grating?w=64&h=48&freq=4&angle=30",
+        0x9291c824c183aaa1,
+    ),
+];
+
+fn check(pins: &[(&str, u64)]) {
     let mut reg = SourceRegistry::new();
     oxideav_generator::register_source(&mut reg);
-    for (uri, want) in PINS {
+    for (uri, want) in pins {
         for threads in ["", "&threads=3"] {
             let uri = format!("{uri}{threads}");
             let SourceOutput::Frames(mut src) = reg.open(&uri).unwrap() else {
@@ -142,6 +154,25 @@ fn eight_bit_stills_match_the_release_pins() {
                 panic!("{uri}: expected a video frame")
             };
             assert_eq!(fnv(&v.planes[0].data), *want, "{uri}");
+        }
+    }
+}
+
+#[test]
+fn eight_bit_stills_match_the_release_pins() {
+    check(PINS);
+}
+
+#[test]
+fn library_math_stills_match_the_release_pins_on_the_reference_platform() {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        check(PINS_LIBRARY_MATH);
+    } else {
+        // Still render them: they must not fail, whatever the bytes.
+        let mut reg = SourceRegistry::new();
+        oxideav_generator::register_source(&mut reg);
+        for (uri, _) in PINS_LIBRARY_MATH {
+            assert!(reg.open(uri).is_ok(), "{uri}");
         }
     }
 }

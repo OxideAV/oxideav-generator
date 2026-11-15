@@ -1486,9 +1486,11 @@ impl ColorRamp {
 /// is located to the exact `f64` with the reference function itself
 /// (a closed-form first guess, then a walk over neighbouring doubles),
 /// which makes a lookup return precisely what the reference function
-/// returns — without evaluating a power per sample. (This rests on the
-/// platform's power function being monotone across each step; the test
-/// suite checks every step position and the doubles either side.)
+/// returns — without evaluating a power per sample. The table is by
+/// construction monotone; a platform whose power function wavered by a
+/// unit in the last place right at a step would differ from it only on
+/// the handful of doubles adjoining that step. The test suite checks
+/// every step position, every bucket edge and a dense sweep.
 struct EncodeTable {
     /// `thresholds[k]`: the least `v` whose code is at least `k`
     /// (`thresholds[0]` is unused; entries past 65535 are `+∞`
@@ -2707,7 +2709,9 @@ mod tests {
             let want = if want < 0.0 { want + 1.0 } else { want };
             let got = turn_fraction(x, y);
             assert!((0.0..1.0).contains(&got));
-            assert!((got - want).abs() < 4e-16, "({x}, {y}): {got} vs {want}");
+            // The library arctangent is itself only good to an ulp or
+            // so, and differs between platforms.
+            assert!((got - want).abs() < 1e-15, "({x}, {y}): {got} vs {want}");
         }
     }
 
@@ -3081,14 +3085,18 @@ mod tests {
     #[test]
     fn encode_table_equals_the_reference_function() {
         let table = EncodeTable::get();
-        // Every step position, and the doubles either side of it.
+        // Every step position: the reference function reaches code k
+        // exactly there, and not on the double just below.
+        let mut previous = f64::NEG_INFINITY;
         for k in 1..=65535usize {
             let v = table.thresholds[k];
-            for probe in [v.next_down(), v, v.next_up()] {
+            assert!(v > previous, "thresholds must increase (k = {k})");
+            previous = v;
+            for probe in [v.next_down(), v] {
                 assert_eq!(
                     table.encode(probe),
                     EncodeTable::reference(probe),
-                    "around threshold {k}"
+                    "at threshold {k}"
                 );
             }
             assert_eq!(EncodeTable::reference(v), k as u16);

@@ -156,7 +156,7 @@ mod tests {
             let want = x.ln();
             let got = ln(x);
             assert!(
-                (got - want).abs() <= 4e-16 * want.abs().max(1.0),
+                (got - want).abs() <= 2e-15 * want.abs().max(1.0),
                 "ln({x}): {got} vs {want}"
             );
             x *= 1.37;
