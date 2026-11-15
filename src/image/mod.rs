@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use oxideav_core::{Error, Result};
 
 pub mod canvas;
+mod detmath;
 pub mod fractal;
 pub mod gradient;
 pub mod grating;
@@ -25,6 +26,7 @@ pub mod palette;
 pub mod pattern;
 pub mod plasma;
 pub mod ramp;
+pub mod random;
 pub mod xc;
 
 /// Row-major RGBA8 image — 4 bytes per pixel, `width * height * 4`
@@ -61,7 +63,8 @@ impl Rgba8Image {
 
 /// Render the still-image generator `kind` (`xc`, `gradient`,
 /// `radial-gradient`, `conic-gradient`, `pattern`, `grating`, `ramp`,
-/// `hald`, `label`, `fractal`, `plasma`, `noise`) from a `generate://`
+/// `hald`, `label`, `fractal`, `plasma`, `noise`, `random`) from a
+/// `generate://`
 /// query. Returns `None` when `kind` is not a still-image generator.
 ///
 /// The output format comes from the query's `depth=8|16|float`,
@@ -95,8 +98,9 @@ pub fn render_still(kind: &str, query: &BTreeMap<String, String>) -> Option<Resu
             "generate://label: oxideav-generator was built without the `label` feature".into(),
         )),
         "fractal" => widen(fractal::render(query)),
-        "plasma" => widen(plasma::render(query)),
-        "noise" => widen(noise::render(query)),
+        "plasma" => plasma::render_image(query),
+        "noise" => noise::render_image(query),
+        "random" => random::render_image(query),
         _ => return None,
     })
 }

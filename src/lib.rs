@@ -12,7 +12,7 @@
 //!    [`StreamFilter`](oxideav_core::StreamFilter) factory under the
 //!    `audio.synth`, `image.xc`, `image.gradient`, `image.pattern`,
 //!    `image.grating`, `image.fractal`, `image.plasma`, `image.noise`,
-//!    `image.ramp`, `image.hald`,
+//!    `image.ramp`, `image.hald`, `image.random`,
 //!    `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
 //!    `video.gradient_animate`, `video.zoneplate`, `video.scroll`,
 //!    `video.colorwheel`, `video.movingbox`, `video.snow`
@@ -156,6 +156,7 @@ mod tests {
             "image.noise",
             "image.ramp",
             "image.hald",
+            "image.random",
             "video.testsrc",
             "video.smptebars",
             "video.fractal_zoom",

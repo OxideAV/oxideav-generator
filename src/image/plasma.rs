@@ -40,6 +40,7 @@ use std::collections::BTreeMap;
 use oxideav_core::{Error, Result};
 
 use super::Rgba8Image;
+use super::canvas::{self, Field, Image, RenderConfig, SampleDepth};
 use super::gradient::{self, GradientOptions};
 use super::palette::default_palette;
 use crate::source::{q_f64, q_u32};
@@ -256,16 +257,113 @@ pub fn render_opts(opts: &PlasmaOptions) -> Result<Rgba8Image> {
     }
 }
 
+/// The three per-channel displacement fields of a plasma.
+fn channel_fields(w: usize, h: usize, seed: u32, amplitude: f32, roughness: f32) -> [Vec<f32>; 3] {
+    [
+        displacement_field(w, h, seed.wrapping_add(0x1000_0001), amplitude, roughness),
+        displacement_field(w, h, seed.wrapping_add(0x2000_0002), amplitude, roughness),
+        displacement_field(w, h, seed.wrapping_add(0x3000_0003), amplitude, roughness),
+    ]
+}
+
+/// A plasma at full sample precision: the 8-bit base (gradient, corner
+/// blend or palette image) plus the continuous displacement of each
+/// colour channel, `(base + displacement) / 255` clamped to `[0, 1]`.
+/// Rounded to 8 bits this is the image [`render_opts`] returns; at 16
+/// bits or float the displacement keeps its fractional part, so the
+/// clouds have no 8-bit steps.
+pub struct PlasmaField {
+    base: Rgba8Image,
+    fields: Option<[Vec<f32>; 3]>,
+}
+
+impl PlasmaField {
+    /// Build the layers for an option record (same rules as
+    /// [`render_opts`]).
+    pub fn new(opts: &PlasmaOptions) -> Result<Self> {
+        let w = opts.gradient.width.max(2);
+        let h = opts.gradient.height.max(2);
+        Ok(match opts.kind {
+            PlasmaKind::Palette => Self {
+                base: render_opts(opts)?,
+                fields: None,
+            },
+            PlasmaKind::Gradient => {
+                let base = GradientOptions {
+                    width: w,
+                    height: h,
+                    ..opts.gradient.clone()
+                };
+                Self {
+                    base: gradient::render_linear(&base)?,
+                    fields: Some(channel_fields(
+                        w as usize,
+                        h as usize,
+                        opts.seed,
+                        opts.amplitude,
+                        opts.roughness,
+                    )),
+                }
+            }
+            PlasmaKind::Fractal => Self {
+                base: random_corner_base(w, h, opts.seed, opts.gradient.from[3]),
+                fields: Some(channel_fields(
+                    w as usize,
+                    h as usize,
+                    opts.seed ^ 0x5A5A_5A5A,
+                    opts.amplitude * FRACTAL_AMPLITUDE_SCALE,
+                    opts.roughness,
+                )),
+            },
+        })
+    }
+}
+
+impl Field for PlasmaField {
+    fn width(&self) -> u32 {
+        self.base.width
+    }
+
+    fn height(&self) -> u32 {
+        self.base.height
+    }
+
+    fn fill_row(&self, y: u32, x0: u32, out: &mut [[f64; 4]]) {
+        let start = (y as usize) * (self.base.width as usize) + x0 as usize;
+        for (i, o) in out.iter_mut().enumerate() {
+            let p = &self.base.pixels[(start + i) * 4..(start + i) * 4 + 4];
+            let mut px = [0f64; 4];
+            for c in 0..3 {
+                let d = self.fields.as_ref().map_or(0.0, |f| f[c][start + i]);
+                px[c] = (f64::from(f32::from(p[c]) + d) / 255.0).clamp(0.0, 1.0);
+            }
+            px[3] = f64::from(p[3]) / 255.0;
+            *o = px;
+        }
+    }
+}
+
+/// `generate://plasma?…` in the depth / layout the query asks for.
+/// 8-bit output is [`render`]'s; deeper output comes from
+/// [`PlasmaField`].
+pub fn render_image(query: &BTreeMap<String, String>) -> Result<Image> {
+    let cfg = RenderConfig::from_query(query)?;
+    if cfg.depth == SampleDepth::U8 {
+        return Ok(canvas::convert_rgba8(render(query)?, &cfg));
+    }
+    let mut opts = PlasmaOptions::from_query(query)?;
+    if opts.kind == PlasmaKind::Palette && !query.contains_key("roughness") {
+        opts = opts.with_roughness(0.7);
+    }
+    Ok(canvas::render(&PlasmaField::new(&opts)?, &cfg))
+}
+
 /// Add one independent signed displacement field per colour channel
 /// (alpha is left alone) and clamp.
 fn displace(mut img: Rgba8Image, seed: u32, amplitude: f32, roughness: f32) -> Rgba8Image {
     let w = img.width as usize;
     let h = img.height as usize;
-    let fields: [Vec<f32>; 3] = [
-        displacement_field(w, h, seed.wrapping_add(0x1000_0001), amplitude, roughness),
-        displacement_field(w, h, seed.wrapping_add(0x2000_0002), amplitude, roughness),
-        displacement_field(w, h, seed.wrapping_add(0x3000_0003), amplitude, roughness),
-    ];
+    let fields = channel_fields(w, h, seed, amplitude, roughness);
     for i in 0..w * h {
         for (c, field) in fields.iter().enumerate() {
             let v = img.pixels[i * 4 + c] as f32 + field[i];
@@ -762,5 +860,49 @@ mod tests {
                 .iter()
                 .all(|&v| v == 0.0)
         );
+    }
+
+    // ── depths ──
+
+    #[test]
+    fn deep_plasma_rounds_to_the_eight_bit_plasma() {
+        for extra in [
+            vec![("from", "red"), ("to", "blue")],
+            vec![("type", "fractal")],
+            vec![],
+        ] {
+            let mut q: BTreeMap<String, String> = [("w", "40"), ("h", "30"), ("seed", "5")]
+                .iter()
+                .chain(extra.iter())
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let low = render(&q).unwrap();
+            q.insert("depth".into(), "float".into());
+            let float = render_image(&q).unwrap();
+            let v = float.as_f32().unwrap();
+            let mut fractional = 0;
+            for (a, f) in low.pixels.iter().zip(v) {
+                let scaled = f64::from(*f) * 255.0;
+                if (scaled - scaled.round()).abs() > 1e-3 {
+                    fractional += 1;
+                }
+                if (scaled - scaled.floor() - 0.5).abs() > 1e-3 {
+                    assert_eq!(f64::from(*a), scaled.round(), "{extra:?}");
+                }
+            }
+            // The displaced modes carry sub-level detail; the palette
+            // mode is defined on 8-bit colours.
+            assert_eq!(fractional > 1000, !extra.is_empty(), "{extra:?}");
+            q.insert("depth".into(), "16".into());
+            let deep = render_image(&q).unwrap();
+            for (d, f) in deep.as_u16().unwrap().iter().zip(v) {
+                let scaled = f64::from(*f) * 65535.0;
+                if (scaled - scaled.floor() - 0.5).abs() > 1e-2 {
+                    assert_eq!(f64::from(*d), scaled.round());
+                }
+            }
+            q.insert("threads".into(), "3".into());
+            assert_eq!(deep, render_image(&q).unwrap());
+        }
     }
 }

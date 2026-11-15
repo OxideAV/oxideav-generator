@@ -29,7 +29,7 @@ use crate::video::{
 /// - `audio.synth`
 /// - `image.xc`, `image.gradient`, `image.pattern`,
 ///   `image.fractal`, `image.plasma`, `image.noise`, `image.ramp`,
-///   `image.hald`
+///   `image.hald`, `image.random`
 /// - `video.testsrc`, `video.smptebars`, `video.fractal_zoom`,
 ///   `video.gradient_animate`, `video.zoneplate`, `video.scroll`,
 ///   `video.colorwheel`, `video.movingbox`, `video.snow`
@@ -53,6 +53,8 @@ pub fn register_filters(ctx: &mut RuntimeContext) {
         .register("image.ramp", Box::new(make_image("ramp")));
     ctx.filters
         .register("image.hald", Box::new(make_image("hald")));
+    ctx.filters
+        .register("image.random", Box::new(make_image("random")));
     ctx.filters
         .register("video.testsrc", Box::new(make_video_testsrc));
     ctx.filters

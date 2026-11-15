@@ -1,0 +1,114 @@
+//! Elementary functions built from `+ − × ÷` and exact bit operations
+//! only, so their results are identical on every platform (the C
+//! library's `ln` / `sin` / `cos` may differ in the last bit between
+//! targets, which is enough to flip a rounding tie in a seeded noise
+//! field).
+//!
+//! Accuracy is a few units in the last place — far below what any
+//! sample depth resolves.
+
+/// Natural logarithm of a positive, finite, normal `x`.
+///
+/// `x = m · 2ᵉ` with `m ∈ [√½, √2)`; then
+/// `ln m = 2·atanh(z)`, `z = (m − 1) / (m + 1)`, `|z| < 0.1716`, by the
+/// odd series `z + z³/3 + … + z²¹/21` (truncation below `10⁻¹⁷`).
+pub(crate) fn ln(x: f64) -> f64 {
+    debug_assert!(x > 0.0 && x.is_finite());
+    let bits = x.to_bits();
+    let mut e = ((bits >> 52) & 0x7FF) as i64 - 1023;
+    // Mantissa in [1, 2).
+    let mut m = f64::from_bits((bits & 0x000F_FFFF_FFFF_FFFF) | 0x3FF0_0000_0000_0000);
+    if m >= std::f64::consts::SQRT_2 {
+        m *= 0.5;
+        e += 1;
+    }
+    let z = (m - 1.0) / (m + 1.0);
+    let z2 = z * z;
+    let mut s = 1.0 / 21.0;
+    let mut k = 19.0;
+    while k >= 1.0 {
+        s = 1.0 / k + z2 * s;
+        k -= 2.0;
+    }
+    2.0 * z * s + e as f64 * std::f64::consts::LN_2
+}
+
+/// `(cos, sin)` of the angle `turns` full turns (`2π · turns` radians).
+///
+/// The angle is folded into the first octant (so the eight principal
+/// directions are exact) and evaluated by the Maclaurin series of
+/// `sin` and `cos` on `[0, π/4]`, to `x¹⁹` and `x¹⁸`.
+pub(crate) fn cos_sin_turns(turns: f64) -> (f64, f64) {
+    let t = turns - turns.floor(); // [0, 1)
+    let eighths = t * 8.0;
+    let octant = eighths.floor();
+    let frac = eighths - octant; // [0, 1) of an octant
+    let odd = (octant as u32) & 1 == 1;
+    // Angle from the nearest axis below (even octant) or above (odd).
+    let x = (if odd { 1.0 - frac } else { frac }) * std::f64::consts::FRAC_PI_4;
+    let x2 = x * x;
+    // Horner forms of the two series.
+    let mut c = 1.0;
+    let mut s = 1.0;
+    let mut k = 18.0;
+    while k >= 2.0 {
+        // cos: 1 − x²/(k(k−1)) · (…);  sin: 1 − x²/((k+1)k) · (…)
+        c = 1.0 - x2 / (k * (k - 1.0)) * c;
+        s = 1.0 - x2 / ((k + 1.0) * k) * s;
+        k -= 2.0;
+    }
+    let (near, far) = (c, x * s); // cos x, sin x with x ∈ [0, π/4]
+    let (a, b) = if odd { (far, near) } else { (near, far) };
+    // (a, b) = (cos, sin) of the angle within its quadrant.
+    match (octant as u32) / 2 {
+        0 => (a, b),
+        1 => (-b, a),
+        2 => (-a, -b),
+        _ => (b, -a),
+    }
+}
+
+/// Square root by the hardware operation (IEEE 754 requires it to be
+/// correctly rounded, so it is as portable as the four arithmetic
+/// operations).
+#[inline]
+pub(crate) fn sqrt(x: f64) -> f64 {
+    x.sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ln_tracks_the_library_function() {
+        assert_eq!(ln(1.0), 0.0);
+        let mut x: f64 = 1e-12;
+        while x < 1e12 {
+            let want = x.ln();
+            let got = ln(x);
+            assert!(
+                (got - want).abs() <= 4e-16 * want.abs().max(1.0),
+                "ln({x}): {got} vs {want}"
+            );
+            x *= 1.37;
+        }
+    }
+
+    #[test]
+    fn cos_sin_are_exact_on_the_axes_and_track_the_library_functions() {
+        assert_eq!(cos_sin_turns(0.0), (1.0, 0.0));
+        assert_eq!(cos_sin_turns(0.25), (0.0, 1.0));
+        assert_eq!(cos_sin_turns(0.5), (-1.0, 0.0));
+        assert_eq!(cos_sin_turns(0.75), (0.0, -1.0));
+        let (c, s) = cos_sin_turns(0.125);
+        assert!((c - s).abs() < 1e-15);
+        for i in 0..4000 {
+            let t = f64::from(i) / 4000.0 * 3.0 - 1.0;
+            let (c, s) = cos_sin_turns(t);
+            let a = t * std::f64::consts::TAU;
+            assert!((c - a.cos()).abs() < 3e-15, "cos {t}");
+            assert!((s - a.sin()).abs() < 3e-15, "sin {t}");
+        }
+    }
+}

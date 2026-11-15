@@ -45,68 +45,227 @@ use std::collections::BTreeMap;
 use oxideav_core::{Error, Result};
 
 use super::Rgba8Image;
+use super::canvas::{self, Field, Image, RenderConfig};
+use super::gradient::{GradientField, GradientKind, GradientOptions};
 use super::palette::default_palette;
 use crate::source::{q_f64, q_str, q_u32};
 
-pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
-    let w = q_u32(query, "w", 640)?.max(1);
-    let h = q_u32(query, "h", 480)?.max(1);
-    let kind = q_str(query, "type", "perlin");
-    let scale = q_f64(query, "scale", 64.0)?.max(1.0);
-    let octaves = q_u32(query, "octaves", 4)?.clamp(1, 8);
-    let seed = q_u32(query, "seed", 42)?;
+/// How a noise scalar becomes a colour.
+enum Colouring {
+    /// The shared 256-entry palette, indexed by `⌊255·s⌋`.
+    Palette(Box<[[u8; 4]; 256]>),
+    /// A gradient colour ramp evaluated at `s` (full precision).
+    Ramp(Box<GradientField>),
+}
 
-    if !matches!(
-        kind,
-        "perlin" | "simplex" | "worley" | "cellular" | "value" | "lattice"
-    ) {
-        return Err(Error::invalid(format!(
-            "noise: unknown type {kind:?} (expected perlin|simplex|value|worley|cellular)"
-        )));
-    }
+/// Which scalar field is sampled.
+#[derive(Copy, Clone)]
+enum Basis {
+    /// Multi-octave sum of a lattice noise.
+    Fractal {
+        mode: NoiseMode,
+        octaves: u32,
+        base_freq: f32,
+        lacunarity: f32,
+        gain: f32,
+    },
+    /// Distance to the k-th nearest feature point.
+    Worley {
+        k: usize,
+        points_per_cell: usize,
+        metric: DistMetric,
+        cell_size: f32,
+        seed: u32,
+    },
+}
 
-    if matches!(kind, "worley" | "cellular") {
-        return render_worley(query, w, h, scale, seed);
-    }
+/// A noise image as a [`Field`]: a scalar in `[0, 1]` at every pixel,
+/// coloured by the palette or by a colour ramp. Build with
+/// [`NoiseField::from_query`].
+pub struct NoiseField {
+    width: u32,
+    height: u32,
+    perm: Box<[u8; 512]>,
+    basis: Basis,
+    colouring: Colouring,
+}
 
-    // `kind` is now one of perlin / simplex / value / lattice. The three
-    // share the same multi-octave fBm accumulator, the same seeded
-    // permutation table, and the same palette mapping — only the per-
-    // octave point sample differs.
-    let mode = match kind {
-        "simplex" => NoiseMode::Simplex,
-        "value" | "lattice" => NoiseMode::Value,
-        _ => NoiseMode::Perlin,
-    };
-
-    let perm = build_perm(seed);
-    let palette = default_palette();
-    let mut img = Rgba8Image::new(w, h);
-    for y in 0..h {
-        for x in 0..w {
-            // Multi-octave fBm — same accumulator for all three kinds;
-            // only the per-octave noise sample differs.
-            let mut amp = 1.0f32;
-            let mut freq = 1.0f32 / (scale as f32);
-            let mut total = 0.0f32;
-            let mut max_total = 0.0f32;
-            for _ in 0..octaves {
-                let sample = match mode {
-                    NoiseMode::Perlin => perlin2(&perm, (x as f32) * freq, (y as f32) * freq),
-                    NoiseMode::Simplex => simplex2(&perm, (x as f32) * freq, (y as f32) * freq),
-                    NoiseMode::Value => value2(&perm, (x as f32) * freq, (y as f32) * freq),
-                };
-                total += amp * sample;
-                max_total += amp;
-                amp *= 0.5;
-                freq *= 2.0;
+impl NoiseField {
+    /// Parse a `generate://noise?…` query:
+    ///
+    /// - `w`, `h`, `seed`, `type=perlin|simplex|value|worley`, `scale`
+    ///   (feature size in pixels);
+    /// - fractal sum (`perlin`, `simplex`, `value`): `octaves` (1–8,
+    ///   default 4), `lacunarity` (frequency ratio between octaves,
+    ///   default 2), `gain` (amplitude ratio, default ½). Octave `i`
+    ///   has frequency `lacunarityⁱ / scale` and weight `gainⁱ`; the
+    ///   weighted sum is divided by the sum of the weights and mapped
+    ///   from `[−1, 1]` to `[0, 1]`;
+    /// - `worley`: `k`, `points`, `dist` (see [`render`]);
+    /// - colour: by default the shared palette; giving `from` / `to` or
+    ///   `stops` (plus `colorspace`, `spread`, `hue`) maps the scalar
+    ///   through that gradient ramp instead, at full sample precision.
+    pub fn from_query(query: &BTreeMap<String, String>) -> Result<Self> {
+        let w = q_u32(query, "w", 640)?.max(1);
+        let h = q_u32(query, "h", 480)?.max(1);
+        let kind = q_str(query, "type", "perlin");
+        let scale = q_f64(query, "scale", 64.0)?.max(1.0);
+        let octaves = q_u32(query, "octaves", 4)?.clamp(1, 8);
+        let seed = q_u32(query, "seed", 42)?;
+        let basis = match kind {
+            "perlin" | "simplex" | "value" | "lattice" => {
+                let lacunarity = q_f64(query, "lacunarity", 2.0)?;
+                let gain = q_f64(query, "gain", q_f64(query, "persistence", 0.5)?)?;
+                if !(lacunarity.is_finite() && lacunarity > 0.0 && gain.is_finite() && gain > 0.0) {
+                    return Err(Error::invalid(
+                        "noise: lacunarity and gain must be positive numbers",
+                    ));
+                }
+                Basis::Fractal {
+                    mode: match kind {
+                        "simplex" => NoiseMode::Simplex,
+                        "value" | "lattice" => NoiseMode::Value,
+                        _ => NoiseMode::Perlin,
+                    },
+                    octaves,
+                    base_freq: 1.0f32 / (scale as f32),
+                    lacunarity: lacunarity as f32,
+                    gain: gain as f32,
+                }
             }
-            let normalised = ((total / max_total) * 0.5 + 0.5).clamp(0.0, 1.0);
-            let idx = (normalised * 255.0) as usize;
-            img.put(x, y, palette[idx.min(255)]);
+            "worley" | "cellular" => {
+                let metric_name = q_str(query, "dist", "euclidean");
+                let metric = match metric_name {
+                    "euclidean" | "euc" | "l2" => DistMetric::Euclidean,
+                    "manhattan" | "l1" => DistMetric::Manhattan,
+                    "chebyshev" | "linf" | "max" => DistMetric::Chebyshev,
+                    other => {
+                        return Err(Error::invalid(format!(
+                            "noise: worley dist {other:?} (expected euclidean|manhattan|chebyshev)"
+                        )));
+                    }
+                };
+                Basis::Worley {
+                    k: q_u32(query, "k", 1)?.clamp(1, 4) as usize,
+                    points_per_cell: q_u32(query, "points", 1)?.clamp(1, 4) as usize,
+                    metric,
+                    cell_size: scale as f32,
+                    seed,
+                }
+            }
+            _ => {
+                return Err(Error::invalid(format!(
+                    "noise: unknown type {kind:?} (expected perlin|simplex|value|worley|cellular)"
+                )));
+            }
+        };
+        let ramp = ["from", "to", "stops"]
+            .iter()
+            .any(|k| query.contains_key(*k));
+        let colouring = if ramp {
+            let mut gq = query.clone();
+            gq.remove("type");
+            gq.remove("angle");
+            if !gq.contains_key("stops") {
+                // Low values dark, high values light unless told otherwise.
+                gq.entry("from".into()).or_insert_with(|| "black".into());
+                gq.entry("to".into()).or_insert_with(|| "white".into());
+            }
+            Colouring::Ramp(Box::new(
+                GradientOptions::from_query(&gq)?.field(GradientKind::Linear)?,
+            ))
+        } else {
+            Colouring::Palette(Box::new(default_palette()))
+        };
+        Ok(Self {
+            width: w,
+            height: h,
+            perm: Box::new(build_perm(seed)),
+            basis,
+            colouring,
+        })
+    }
+
+    /// The noise scalar at pixel `(x, y)`, in `[0, 1]`.
+    pub fn scalar(&self, x: u32, y: u32) -> f32 {
+        match self.basis {
+            Basis::Fractal {
+                mode,
+                octaves,
+                base_freq,
+                lacunarity,
+                gain,
+            } => {
+                let perm = &*self.perm;
+                let mut amp = 1.0f32;
+                let mut freq = base_freq;
+                let mut total = 0.0f32;
+                let mut max_total = 0.0f32;
+                for _ in 0..octaves {
+                    let sample = match mode {
+                        NoiseMode::Perlin => perlin2(perm, (x as f32) * freq, (y as f32) * freq),
+                        NoiseMode::Simplex => simplex2(perm, (x as f32) * freq, (y as f32) * freq),
+                        NoiseMode::Value => value2(perm, (x as f32) * freq, (y as f32) * freq),
+                    };
+                    total += amp * sample;
+                    max_total += amp;
+                    amp *= gain;
+                    freq *= lacunarity;
+                }
+                ((total / max_total) * 0.5 + 0.5).clamp(0.0, 1.0)
+            }
+            Basis::Worley {
+                k,
+                points_per_cell,
+                metric,
+                cell_size,
+                seed,
+            } => worley_scalar(x, y, k, points_per_cell, metric, cell_size, seed),
         }
     }
-    Ok(img)
+}
+
+impl Field for NoiseField {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn fill_row(&self, y: u32, x0: u32, out: &mut [[f64; 4]]) {
+        for (i, o) in out.iter_mut().enumerate() {
+            let s = self.scalar(x0 + i as u32, y);
+            *o = match &self.colouring {
+                Colouring::Palette(palette) => {
+                    let idx = (s * 255.0) as usize;
+                    palette[idx.min(255)].map(|v| f64::from(v) / 255.0)
+                }
+                Colouring::Ramp(ramp) => ramp.color_at(f64::from(s)),
+            };
+        }
+    }
+}
+
+/// `generate://noise?…` as 8-bit RGBA. Keys per
+/// [`NoiseField::from_query`].
+///
+/// Worley / cellular noise: the plane is divided into cells of side
+/// `scale` pixels, each holding `points` (1–4) pseudo-random feature
+/// points; a pixel's scalar is its distance to the `k`-th (1–4)
+/// closest feature point over the 3 × 3 cell neighbourhood, under
+/// `dist=euclidean|manhattan|chebyshev`, divided by `scale` and
+/// clamped to 1.
+pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
+    let field = NoiseField::from_query(query)?;
+    Ok(canvas::render(&field, &RenderConfig::new()).into_rgba8())
+}
+
+/// Like [`render`], in the depth / layout the query asks for.
+pub fn render_image(query: &BTreeMap<String, String>) -> Result<Image> {
+    let field = NoiseField::from_query(query)?;
+    Ok(canvas::render(&field, &RenderConfig::from_query(query)?))
 }
 
 #[derive(Copy, Clone)]
@@ -116,106 +275,55 @@ enum NoiseMode {
     Value,
 }
 
-/// Worley / cellular noise dispatcher.
-///
-/// The 2-D plane is divided into integer cells of side `scale` (in pixels).
-/// Each cell holds a small constant number of pseudo-randomly placed
-/// feature points; for each pixel, the distance to the k-th closest of
-/// these feature points (over the 3×3 neighbourhood of cells around the
-/// pixel's home cell) is the noise sample. The sample is normalised by
-/// `scale` so the palette mapping stays roughly invariant under `scale`,
-/// then run through the same palette the gradient-noise paths use.
-///
-/// Parameters (URI):
-/// - `scale=` cell side in pixels (default 64, min 1) — controls the
-///   apparent texture grain.
-/// - `seed=` u32 seed for the feature-point placement (default 42).
-/// - `k=` which closest distance to use (default 1, clamped to `[1, 4]`).
-///   `k=1` is the classical Voronoi-cell texture (F1); `k=2` is the F2
-///   distance; their difference `F2 − F1` is a popular ridge texture in
-///   the procedural-graphics literature (not exposed as a separate mode
-///   here — callers can post-process if needed).
-/// - `dist=` one of `euclidean|euc|l2` (default), `manhattan|l1`,
-///   `chebyshev|linf|max`.
-/// - `points=` number of feature points per cell, default 1, clamped to
-///   `[1, 4]`. Higher counts pack the plane more densely.
-fn render_worley(
-    query: &BTreeMap<String, String>,
-    w: u32,
-    h: u32,
-    scale: f64,
+/// Normalised distance from pixel `(x, y)` to its `k`-th closest
+/// feature point (see [`render`]).
+fn worley_scalar(
+    x: u32,
+    y: u32,
+    k: usize,
+    points_per_cell: usize,
+    metric: DistMetric,
+    cell_size: f32,
     seed: u32,
-) -> Result<Rgba8Image> {
-    let k = q_u32(query, "k", 1)?.clamp(1, 4) as usize;
-    let points_per_cell = q_u32(query, "points", 1)?.clamp(1, 4) as usize;
-    let metric_name = q_str(query, "dist", "euclidean");
-    let metric = match metric_name {
-        "euclidean" | "euc" | "l2" => DistMetric::Euclidean,
-        "manhattan" | "l1" => DistMetric::Manhattan,
-        "chebyshev" | "linf" | "max" => DistMetric::Chebyshev,
-        other => {
-            return Err(Error::invalid(format!(
-                "noise: worley dist {other:?} (expected euclidean|manhattan|chebyshev)"
-            )));
-        }
-    };
-
-    let cell_size = scale as f32;
-    let palette = default_palette();
-    let mut img = Rgba8Image::new(w, h);
-    // The k-th closest distance — k ≤ 4 and we visit 9 cells × `points`
-    // candidates, so a tiny fixed-size sorted buffer is cheaper than a
-    // heap and keeps the per-pixel allocation count at zero.
+) -> f32 {
+    // k ≤ 4 and 9 cells × `points` candidates: a tiny sorted buffer is
+    // cheaper than a heap and allocates nothing.
     let mut nearest = [f32::INFINITY; 4];
-    for y in 0..h {
-        for x in 0..w {
-            for slot in nearest.iter_mut() {
-                *slot = f32::INFINITY;
-            }
-            let px = x as f32;
-            let py = y as f32;
-            let cx = (px / cell_size).floor() as i32;
-            let cy = (py / cell_size).floor() as i32;
-            for dcy in -1..=1 {
-                for dcx in -1..=1 {
-                    let ncx = cx + dcx;
-                    let ncy = cy + dcy;
-                    for p in 0..points_per_cell {
-                        let (fx, fy) = feature_point(ncx, ncy, p as u32, seed, cell_size);
-                        let d = match metric {
-                            DistMetric::Euclidean => {
-                                let dx = px - fx;
-                                let dy = py - fy;
-                                (dx * dx + dy * dy).sqrt()
-                            }
-                            DistMetric::Manhattan => (px - fx).abs() + (py - fy).abs(),
-                            DistMetric::Chebyshev => (px - fx).abs().max((py - fy).abs()),
-                        };
-                        // Insert d into a sorted top-k buffer.
-                        for slot_i in 0..k {
-                            if d < nearest[slot_i] {
-                                for j in (slot_i + 1..k).rev() {
-                                    nearest[j] = nearest[j - 1];
-                                }
-                                nearest[slot_i] = d;
-                                break;
-                            }
+    let px = x as f32;
+    let py = y as f32;
+    let cx = (px / cell_size).floor() as i32;
+    let cy = (py / cell_size).floor() as i32;
+    for dcy in -1..=1 {
+        for dcx in -1..=1 {
+            let ncx = cx + dcx;
+            let ncy = cy + dcy;
+            for p in 0..points_per_cell {
+                let (fx, fy) = feature_point(ncx, ncy, p as u32, seed, cell_size);
+                let d = match metric {
+                    DistMetric::Euclidean => {
+                        let dx = px - fx;
+                        let dy = py - fy;
+                        (dx * dx + dy * dy).sqrt()
+                    }
+                    DistMetric::Manhattan => (px - fx).abs() + (py - fy).abs(),
+                    DistMetric::Chebyshev => (px - fx).abs().max((py - fy).abs()),
+                };
+                // Insert d into the sorted top-k buffer.
+                for slot_i in 0..k {
+                    if d < nearest[slot_i] {
+                        for j in (slot_i + 1..k).rev() {
+                            nearest[j] = nearest[j - 1];
                         }
+                        nearest[slot_i] = d;
+                        break;
                     }
                 }
             }
-            // Normalise the k-th distance by `cell_size`. The theoretical
-            // upper bound for the F1 Euclidean distance with one feature
-            // point per cell is around `sqrt(2) · cell_size` (the worst
-            // case is a sample at one corner with the only point in the
-            // opposite corner of the home cell). Clamping at 1.0 keeps
-            // the palette index inside the table.
-            let normalised = (nearest[k - 1] / cell_size).clamp(0.0, 1.0);
-            let idx = (normalised * 255.0) as usize;
-            img.put(x, y, palette[idx.min(255)]);
         }
     }
-    Ok(img)
+    // The F1 Euclidean distance with one point per cell is bounded by
+    // about √2 · cell_size; clamping at 1 keeps the scalar in range.
+    (nearest[k - 1] / cell_size).clamp(0.0, 1.0)
 }
 
 #[derive(Copy, Clone)]
@@ -1023,5 +1131,111 @@ mod tests {
         .unwrap();
         // Just confirm we got something non-degenerate.
         assert_eq!(img.pixels.len(), 60 * 60 * 4);
+    }
+
+    // ── colour ramps, octave controls, depths ──
+
+    use crate::image::canvas::{Channels, SampleDepth};
+
+    #[test]
+    fn ramp_colouring_follows_the_scalar_at_full_precision() {
+        let q = map(&[
+            ("type", "simplex"),
+            ("w", "48"),
+            ("h", "32"),
+            ("scale", "9"),
+            ("from", "black"),
+            ("to", "white"),
+        ]);
+        let field = NoiseField::from_query(&q).unwrap();
+        let img = canvas::render(
+            &field,
+            &RenderConfig::new()
+                .with_depth(SampleDepth::F32)
+                .with_channels(Channels::Gray),
+        );
+        let v = img.as_f32().unwrap();
+        for y in 0..32 {
+            for x in 0..48 {
+                assert_eq!(v[(y * 48 + x) as usize], field.scalar(x, y));
+            }
+        }
+        // More than 256 distinct values: not an 8-bit field widened.
+        let mut distinct: Vec<u32> = v.iter().map(|f| f.to_bits()).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(distinct.len() > 600, "{} distinct values", distinct.len());
+        // 16-bit is the rounded float, 8-bit the rounded 16-bit.
+        let deep = canvas::render(
+            &field,
+            &RenderConfig::new()
+                .with_depth(SampleDepth::U16)
+                .with_channels(Channels::Gray),
+        );
+        for (d, f) in deep.as_u16().unwrap().iter().zip(v) {
+            assert_eq!(f64::from(*d), (f64::from(*f) * 65535.0).round());
+        }
+    }
+
+    #[test]
+    fn multi_stop_ramp_colours_the_noise() {
+        let img = render(&map(&[
+            ("type", "value"),
+            ("w", "32"),
+            ("h", "32"),
+            ("scale", "6"),
+            ("stops", "navy, white 50%, darkred"),
+        ]))
+        .unwrap();
+        // Every pixel lies on the navy → white → darkred path: either
+        // red ≤ green = … (navy side: r = g ≤ b) or the dark-red side
+        // (g = b ≤ r).
+        for p in img.pixels.chunks(4) {
+            assert!(
+                (p[0] == p[1] && p[1] <= p[2]) || (p[1] == p[2] && p[1] <= p[0]),
+                "{p:?}"
+            );
+            assert_eq!(p[3], 255);
+        }
+    }
+
+    #[test]
+    fn octave_controls_change_the_field_and_defaults_do_not() {
+        let base = [("type", "perlin"), ("w", "24"), ("h", "24"), ("scale", "8")];
+        let plain = render(&map(&base)).unwrap();
+        let mut explicit = map(&base);
+        explicit.insert("lacunarity".into(), "2".into());
+        explicit.insert("gain".into(), "0.5".into());
+        assert_eq!(render(&explicit).unwrap().pixels, plain.pixels);
+        let mut rough = map(&base);
+        rough.insert("gain".into(), "0.9".into());
+        assert_ne!(render(&rough).unwrap().pixels, plain.pixels);
+        let mut wide = map(&base);
+        wide.insert("lacunarity".into(), "3".into());
+        assert_ne!(render(&wide).unwrap().pixels, plain.pixels);
+        let mut one = map(&base);
+        one.insert("octaves".into(), "1".into());
+        one.insert("gain".into(), "0.9".into());
+        let mut one_plain = map(&base);
+        one_plain.insert("octaves".into(), "1".into());
+        // A single octave has nothing for gain to weigh.
+        assert_eq!(
+            render(&one).unwrap().pixels,
+            render(&one_plain).unwrap().pixels
+        );
+        let mut bad = map(&base);
+        bad.insert("gain".into(), "0".into());
+        assert!(render(&bad).is_err());
+    }
+
+    #[test]
+    fn noise_is_identical_under_any_thread_budget() {
+        for kind in ["perlin", "simplex", "value", "worley"] {
+            let mut q = map(&[("w", "40"), ("h", "33"), ("scale", "7"), ("depth", "16")]);
+            q.insert("type".into(), kind.into());
+            let serial = render_image(&q).unwrap();
+            q.insert("threads".into(), "4".into());
+            assert_eq!(serial, render_image(&q).unwrap(), "{kind}");
+        }
     }
 }

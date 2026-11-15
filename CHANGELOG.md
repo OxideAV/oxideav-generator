@@ -28,6 +28,21 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   radial ellipse, and interpolation in Oklab, OkLCh, CIELAB and
   LCh(ab) with selectable hue arc (`colorspace=`, `hue=`), on top of
   the existing sRGB and linear-light spaces.
+- `random` image generator (`generate://random`, filter
+  `image.random`): seeded per-pixel noise — `random`, `uniform`,
+  `gaussian`, `impulse`, `laplacian`, `poisson`, `multiplicative` —
+  around a base colour, colour or mono. Samples are a pure function of
+  `(seed, x, y, channel)` and use arithmetic-only logarithm / cosine,
+  so a seed gives the same field on every platform and thread budget.
+- `noise`: `lacunarity=` / `gain=` octave controls; `from=` / `to=` /
+  `stops=` colour the scalar through a gradient ramp at full sample
+  precision instead of the 8-bit palette (`NoiseField`).
+- `plasma` at 16-bit / float keeps the fractional part of the
+  displacement (`PlasmaField`); its 8-bit rounding is the existing
+  output.
+- `tests/pinned_bytes.rs`: hashes of the 0.1.6 8-bit output of every
+  still generator, so rendering refactors cannot change published
+  pixels.
 - `benches/mpps.rs`: megapixels-per-second harness for the still-image
   generators.
 

@@ -113,6 +113,18 @@ fn every_image_kind_is_byte_deterministic() {
         "generate://noise?type=simplex&w=8&h=8&scale=4&seed=42",
         "generate://noise?type=value&w=8&h=8&scale=4&seed=42",
         "generate://noise?type=worley&w=8&h=8&scale=4&seed=42",
+        "generate://noise?type=perlin&from=black&to=white&depth=16&w=8&h=8&scale=4",
+        "generate://gradient?type=conic&stops=red,lime,blue,red&w=8&h=8",
+        "generate://gradient?stops=red,white%2030%25,blue&colorspace=oklch&spread=reflect&vector=0,0,3,3&w=8&h=8",
+        "generate://gradient?from=black&to=white&depth=16&dither=noise&w=8&h=8",
+        "generate://random?type=random&seed=3&w=8&h=8",
+        "generate://random?type=uniform&seed=3&w=8&h=8",
+        "generate://random?type=gaussian&seed=3&w=8&h=8",
+        "generate://random?type=impulse&seed=3&w=8&h=8",
+        "generate://random?type=laplacian&seed=3&w=8&h=8",
+        "generate://random?type=poisson&seed=3&w=8&h=8",
+        "generate://random?type=multiplicative&seed=3&w=8&h=8&depth=16&channels=gray",
+        "generate://plasma?from=red&to=blue&w=8&h=8&seed=42&depth=16",
     ]);
 }
 
