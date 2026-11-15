@@ -27,8 +27,13 @@
 //! not clamped — a Gaussian field keeps its tails; integer depths clamp
 //! to the representable range.
 //!
-//! A Poisson count with mean up to 48 is drawn exactly, by multiplying
-//! uniforms until the product falls below `e^(−mean)`; above that the
+//! The normal variates come in pairs — `√(−2 ln u₁)·cos 2πu₂` and the
+//! same radius times `sin 2πu₂` are independent — so red and green
+//! share one pair and blue takes the first half of a second.
+//!
+//! A Poisson count with mean up to 48 is drawn exactly by inverting
+//! the cumulative distribution (tabulated once per channel, since the
+//! mean is the same at every pixel) on a 53-bit uniform; above that the
 //! count is `max(0, round(mean + √mean · n))`, whose error is far below
 //! one count in the first two moments.
 
@@ -196,37 +201,49 @@ impl RandomOptions {
 
     /// The field, ready for [`canvas::render`].
     pub fn field(&self) -> RandomField {
-        RandomField {
-            opts: *self,
-            amount: self
-                .amount
-                .unwrap_or_else(|| self.distribution.default_amount()),
-        }
+        RandomField::new(*self)
     }
 }
 
 /// [`RandomOptions`] as a [`Field`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct RandomField {
     opts: RandomOptions,
     amount: f64,
+    /// Per-channel Poisson cumulative distribution (`cdf[c][n]` =
+    /// `P(N ≤ n)`), empty when the channel uses the normal branch or
+    /// the distribution is not Poisson.
+    poisson_cdf: [Vec<f64>; 3],
 }
 
-/// Uniform in `(0, 1)`: draw `index` of channel stream `channel` at
-/// pixel `(x, y)`.
+/// Largest Poisson mean drawn by exact inversion.
+const POISSON_EXACT_MEAN: f64 = 48.0;
+
+/// Uniform in `(0, 1)`: draw `index` of stream `stream` at pixel
+/// `(x, y)`.
 #[inline]
-fn uniform(seed: u32, channel: u32, index: u32, x: u32, y: u32) -> f64 {
-    let word = mix(seed, 0xA24B_AED5 ^ (channel + 4 * index), x, y);
+fn uniform(seed: u32, stream: u32, index: u32, x: u32, y: u32) -> f64 {
+    let word = mix(seed, 0xA24B_AED5 ^ (stream + 4 * index), x, y);
     (f64::from(word) + 0.5) / 4_294_967_296.0
 }
 
-/// Standard normal by the polar form of two uniforms.
+/// Uniform in `(0, 1)` with 53 random bits, from draws 0 and 1 of the
+/// stream.
 #[inline]
-fn normal(seed: u32, channel: u32, index: u32, x: u32, y: u32) -> f64 {
-    let u1 = uniform(seed, channel, index, x, y);
-    let u2 = uniform(seed, channel, index + 1, x, y);
+fn uniform53(seed: u32, stream: u32, x: u32, y: u32) -> f64 {
+    let hi = u64::from(mix(seed, 0xA24B_AED5 ^ stream, x, y));
+    let lo = u64::from(mix(seed, 0xA24B_AED5 ^ (stream + 4), x, y));
+    (((hi << 21) | (lo >> 11)) as f64 + 0.5) / 9_007_199_254_740_992.0
+}
+
+/// Two independent standard normals from draws 0 and 1 of the stream.
+#[inline]
+fn normal_pair(seed: u32, stream: u32, x: u32, y: u32) -> (f64, f64) {
+    let u1 = uniform(seed, stream, 0, x, y);
+    let u2 = uniform(seed, stream, 1, x, y);
     let radius = detmath::sqrt(-2.0 * detmath::ln(u1));
-    radius * detmath::cos_sin_turns(u2).0
+    let (cos, sin) = detmath::cos_sin_turns(u2);
+    (radius * cos, radius * sin)
 }
 
 /// `e^(−m)` for `m ∈ [0, 48]`: `(e^(−m/64))⁶⁴` with the inner factor
@@ -246,60 +263,115 @@ fn exp_neg(m: f64) -> f64 {
     p
 }
 
+/// `P(N ≤ n)` for a Poisson variable of the given mean, `n = 0, 1, …`
+/// until the remaining tail is below the resolution of an `f64`.
+fn poisson_cdf(mean: f64) -> Vec<f64> {
+    let mut p = exp_neg(mean);
+    let mut cdf = p;
+    let mut table = vec![cdf];
+    let mut n = 0.0;
+    while table.len() < 512 {
+        n += 1.0;
+        p *= mean / n;
+        let next = cdf + p;
+        if next == cdf && n > mean {
+            break;
+        }
+        cdf = next;
+        table.push(cdf);
+    }
+    table
+}
+
 impl RandomField {
-    /// One sample for component value `c` on channel stream `channel`.
+    fn new(opts: RandomOptions) -> Self {
+        let amount = opts
+            .amount
+            .unwrap_or_else(|| opts.distribution.default_amount());
+        let mut poisson = [Vec::new(), Vec::new(), Vec::new()];
+        if opts.distribution == NoiseDistribution::Poisson && amount > 0.0 {
+            for (c, table) in poisson.iter_mut().enumerate() {
+                let mean = amount * opts.base[c].max(0.0);
+                if mean <= POISSON_EXACT_MEAN {
+                    *table = poisson_cdf(mean);
+                }
+            }
+        }
+        Self {
+            opts,
+            amount,
+            poisson_cdf: poisson,
+        }
+    }
+
+    /// The three colour samples of pixel `(x, y)`.
     #[inline]
-    fn sample(&self, c: f64, channel: u32, x: u32, y: u32) -> f64 {
+    fn pixel(&self, x: u32, y: u32) -> [f64; 3] {
         let seed = self.opts.seed;
         let k = self.amount;
+        let b = self.opts.base;
+        // Stream of channel `c`: one shared stream when mono.
+        let stream = |c: usize| if self.opts.mono { 0 } else { c as u32 };
+        let per_channel =
+            |f: &dyn Fn(usize, u32) -> f64| [f(0, stream(0)), f(1, stream(1)), f(2, stream(2))];
         match self.opts.distribution {
-            NoiseDistribution::Random => uniform(seed, channel, 0, x, y),
-            NoiseDistribution::Uniform => c + k * (uniform(seed, channel, 0, x, y) - 0.5),
-            NoiseDistribution::Gaussian => c + k * normal(seed, channel, 0, x, y),
-            NoiseDistribution::Impulse => {
-                let u = uniform(seed, channel, 0, x, y);
+            NoiseDistribution::Random => per_channel(&|_, s| uniform(seed, s, 0, x, y)),
+            NoiseDistribution::Uniform => {
+                per_channel(&|c, s| b[c] + k * (uniform(seed, s, 0, x, y) - 0.5))
+            }
+            NoiseDistribution::Gaussian | NoiseDistribution::Multiplicative => {
+                let (n0, n1) = normal_pair(seed, 0, x, y);
+                let n = if self.opts.mono {
+                    [n0, n0, n0]
+                } else {
+                    [n0, n1, normal_pair(seed, 1, x, y).0]
+                };
+                if self.opts.distribution == NoiseDistribution::Gaussian {
+                    [b[0] + k * n[0], b[1] + k * n[1], b[2] + k * n[2]]
+                } else {
+                    [
+                        b[0] * (1.0 + k * n[0]),
+                        b[1] * (1.0 + k * n[1]),
+                        b[2] * (1.0 + k * n[2]),
+                    ]
+                }
+            }
+            NoiseDistribution::Impulse => per_channel(&|c, s| {
+                let u = uniform(seed, s, 0, x, y);
                 if u < k / 2.0 {
                     0.0
                 } else if u < k {
                     1.0
                 } else {
-                    c
+                    b[c]
                 }
-            }
-            NoiseDistribution::Laplacian => {
-                let d = uniform(seed, channel, 0, x, y) - 0.5;
+            }),
+            NoiseDistribution::Laplacian => per_channel(&|c, s| {
+                let d = uniform(seed, s, 0, x, y) - 0.5;
                 let magnitude = -detmath::ln(1.0 - 2.0 * d.abs());
                 if d < 0.0 {
-                    c - k * magnitude
+                    b[c] - k * magnitude
                 } else {
-                    c + k * magnitude
+                    b[c] + k * magnitude
                 }
-            }
-            NoiseDistribution::Poisson => {
-                let mean = k * c.max(0.0);
+            }),
+            NoiseDistribution::Poisson => per_channel(&|c, s| {
                 if k <= 0.0 {
-                    return c;
+                    return b[c];
                 }
-                let count = if mean <= 48.0 {
-                    let limit = exp_neg(mean);
-                    let mut product = 1.0;
-                    let mut n = 0u32;
-                    loop {
-                        product *= uniform(seed, channel, n, x, y);
-                        if product <= limit || n >= 1024 {
-                            break;
-                        }
-                        n += 1;
-                    }
-                    f64::from(n)
-                } else {
-                    (mean + detmath::sqrt(mean) * normal(seed, channel, 0, x, y))
+                let table = &self.poisson_cdf[c];
+                let count = if table.is_empty() {
+                    let mean = k * b[c].max(0.0);
+                    (mean + detmath::sqrt(mean) * normal_pair(seed, s, x, y).0)
                         .round()
                         .max(0.0)
+                } else {
+                    // The count is the number of table entries below u.
+                    let u = uniform53(seed, s, x, y);
+                    table.partition_point(|p| *p < u) as f64
                 };
                 count / k
-            }
-            NoiseDistribution::Multiplicative => c * (1.0 + k * normal(seed, channel, 0, x, y)),
+            }),
         }
     }
 }
@@ -314,29 +386,10 @@ impl Field for RandomField {
     }
 
     fn fill_row(&self, y: u32, x0: u32, out: &mut [[f64; 4]]) {
-        let b = self.opts.base;
-        let grey_base = b[0] == b[1] && b[1] == b[2];
+        let alpha = self.opts.base[3];
         for (i, o) in out.iter_mut().enumerate() {
-            let x = x0 + i as u32;
-            *o = if self.opts.mono && grey_base {
-                let v = self.sample(b[0], 0, x, y);
-                [v, v, v, b[3]]
-            } else if self.opts.mono {
-                // One variate, applied to each component.
-                [
-                    self.sample(b[0], 0, x, y),
-                    self.sample(b[1], 0, x, y),
-                    self.sample(b[2], 0, x, y),
-                    b[3],
-                ]
-            } else {
-                [
-                    self.sample(b[0], 0, x, y),
-                    self.sample(b[1], 1, x, y),
-                    self.sample(b[2], 2, x, y),
-                    b[3],
-                ]
-            };
+            let [r, g, b] = self.pixel(x0 + i as u32, y);
+            *o = [r, g, b, alpha];
         }
     }
 }

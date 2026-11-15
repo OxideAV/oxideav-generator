@@ -619,10 +619,6 @@ impl BoundingBox {
         };
         Ok(Self::new(width, height, x, y))
     }
-
-    fn contains(&self, x: u32, y: u32) -> bool {
-        x >= self.x && y >= self.y && x - self.x < self.width && y - self.y < self.height
-    }
 }
 
 /// Everything that shapes a two-stop gradient. Build with
@@ -1103,11 +1099,21 @@ pub fn turn_fraction(x: f64, y: f64) -> f64 {
         let z = half(half(lo / hi));
         let z2 = z * z;
         // Horner form of z − z³/3 + z⁵/5 − … + z²¹/21.
+        const RECIPROCALS: [f64; 10] = [
+            1.0 / 19.0,
+            1.0 / 17.0,
+            1.0 / 15.0,
+            1.0 / 13.0,
+            1.0 / 11.0,
+            1.0 / 9.0,
+            1.0 / 7.0,
+            1.0 / 5.0,
+            1.0 / 3.0,
+            1.0,
+        ];
         let mut s = 1.0 / 21.0;
-        let mut k = 19.0;
-        while k >= 1.0 {
-            s = 1.0 / k - z2 * s;
-            k -= 2.0;
+        for r in RECIPROCALS {
+            s = r - z2 * s;
         }
         // atan(lo/hi) = 4·z·s radians; one turn is 2π.
         (4.0 * z * s) / std::f64::consts::TAU
@@ -1132,14 +1138,27 @@ pub fn turn_fraction(x: f64, y: f64) -> f64 {
 struct Segment {
     o0: f64,
     o1: f64,
-    /// Interpolation-space components, premultiplied by alpha (hue
-    /// excepted), `[c0, c1, c2, alpha]`.
+    /// Interpolation-space components at `o0`, premultiplied by alpha
+    /// (hue excepted), `[c0, c1, c2, alpha]`.
     c0: [f64; 4],
-    c1: [f64; 4],
     /// The stops' own straight encoded colours, returned verbatim at
     /// the segment ends in the perceptual spaces.
     s0: [f64; 4],
     s1: [f64; 4],
+    /// `c1 − c0`, component by component.
+    delta: [f64; 4],
+    /// Both ends have alpha exactly 1: the interpolated alpha is then
+    /// exactly 1 and un-premultiplying is the identity, so it is
+    /// skipped.
+    opaque: bool,
+}
+
+/// Outcome of locating a gradient parameter on the ramp.
+enum Located {
+    /// A stop's own colour (straight, encoded).
+    Stop([f64; 4]),
+    /// Straight interpolation-space components and alpha.
+    Mix([f64; 3], f64),
 }
 
 type Mat3 = [[f64; 3]; 3];
@@ -1194,6 +1213,10 @@ struct ColorRamp {
     white: [f64; 3],
     /// Colour painted outside the bounding box.
     outside: [f64; 4],
+    /// The third component is a hue (not premultiplied).
+    polar: bool,
+    /// A parameter on a stop returns the stop's own colour.
+    exact_ends: bool,
 }
 
 impl ColorRamp {
@@ -1263,9 +1286,10 @@ impl ColorRamp {
                 o0,
                 o1,
                 c0,
-                c1,
                 s0,
                 s1,
+                delta: [c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2], c1[3] - c0[3]],
+                opaque: c0[3] == 1.0 && c1[3] == 1.0,
             });
         }
         if segments.is_empty() {
@@ -1276,9 +1300,10 @@ impl ColorRamp {
                 o0: o,
                 o1: o,
                 c0: c,
-                c1: c,
                 s0: s,
                 s1: s,
+                delta: [0.0; 4],
+                opaque: c[3] == 1.0,
             });
         }
         let rgb_to_xyz = RgbPrimaries::BT709.rgb_to_xyz();
@@ -1300,27 +1325,25 @@ impl ColorRamp {
             xyz_to_linear,
             white,
             outside,
+            polar,
+            exact_ends: !matches!(space, GradientColorspace::Srgb | GradientColorspace::Linear),
         })
     }
 
-    /// Interpolation-space components → straight encoded sRGB.
+    /// Interpolation-space components → linear-light sRGB (clamped to
+    /// the gamut for the perceptual spaces). Not used for `Srgb`.
     #[inline]
-    fn decode(&self, v: [f64; 3]) -> [f64; 3] {
+    fn to_linear(&self, v: [f64; 3]) -> [f64; 3] {
         let from_xyz = |xyz: [f64; 3]| {
             let lin = mat3_apply(&self.xyz_to_linear, xyz);
             [
-                linear_to_srgb(lin[0].clamp(0.0, 1.0)),
-                linear_to_srgb(lin[1].clamp(0.0, 1.0)),
-                linear_to_srgb(lin[2].clamp(0.0, 1.0)),
+                lin[0].clamp(0.0, 1.0),
+                lin[1].clamp(0.0, 1.0),
+                lin[2].clamp(0.0, 1.0),
             ]
         };
         match self.space {
-            GradientColorspace::Srgb => v,
-            GradientColorspace::Linear => [
-                linear_to_srgb(v[0]),
-                linear_to_srgb(v[1]),
-                linear_to_srgb(v[2]),
-            ],
+            GradientColorspace::Srgb | GradientColorspace::Linear => v,
             GradientColorspace::Oklab => from_xyz(oklab_to_xyz_d65(v)),
             GradientColorspace::Oklch => from_xyz(oklab_to_xyz_d65(lch_to_lab(v))),
             GradientColorspace::Lab => from_xyz(lab_to_xyz(v, self.white)),
@@ -1328,9 +1351,40 @@ impl ColorRamp {
         }
     }
 
-    /// Straight encoded colour at gradient parameter `t`.
+    /// Interpolation-space components → straight encoded sRGB.
     #[inline]
-    fn at(&self, t: f64) -> [f64; 4] {
+    fn decode(&self, v: [f64; 3]) -> [f64; 3] {
+        if self.space == GradientColorspace::Srgb {
+            return v;
+        }
+        let lin = self.to_linear(v);
+        [
+            linear_to_srgb(lin[0]),
+            linear_to_srgb(lin[1]),
+            linear_to_srgb(lin[2]),
+        ]
+    }
+
+    /// `Some((c0, delta))` when the ramp is two opaque colours over
+    /// `[0, 1]`, padded, in the sRGB space: the colour at `t` is then
+    /// exactly `c0 + delta · clamp(t, 0, 1)` per component with alpha
+    /// 1, which is what [`ColorRamp::locate`] computes for it.
+    #[inline]
+    fn simple(&self) -> Option<([f64; 4], [f64; 4])> {
+        let seg = self.segments.first()?;
+        (self.segments.len() == 1
+            && self.space == GradientColorspace::Srgb
+            && self.spread == GradientSpread::Pad
+            && seg.opaque
+            && seg.o0 == 0.0
+            && seg.o1 == 1.0)
+            .then_some((seg.c0, seg.delta))
+    }
+
+    /// Apply the spread method and find the colour at `t`, short of
+    /// the conversion back to encoded sRGB.
+    #[inline]
+    fn locate(&self, t: f64) -> Located {
         let t = if t.is_nan() {
             0.0
         } else {
@@ -1355,18 +1409,14 @@ impl ColorRamp {
             i += 1;
         }
         let seg = &self.segments[i];
-        let exact_ends = !matches!(
-            self.space,
-            GradientColorspace::Srgb | GradientColorspace::Linear
-        );
         let u = if t >= seg.o1 {
-            if exact_ends || seg.o1 <= seg.o0 {
-                return seg.s1;
+            if self.exact_ends || seg.o1 <= seg.o0 {
+                return Located::Stop(seg.s1);
             }
             1.0
         } else if t <= seg.o0 {
-            if exact_ends {
-                return seg.s0;
+            if self.exact_ends {
+                return Located::Stop(seg.s0);
             }
             0.0
         } else if seg.o0 == 0.0 && seg.o1 == 1.0 {
@@ -1374,23 +1424,168 @@ impl ColorRamp {
         } else {
             (t - seg.o0) / (seg.o1 - seg.o0)
         };
-        let mut p = [0f64; 4];
-        for (i, v) in p.iter_mut().enumerate() {
-            *v = seg.c0[i] + (seg.c1[i] - seg.c0[i]) * u;
+        let mix = |i: usize| seg.c0[i] + seg.delta[i] * u;
+        if seg.opaque {
+            return Located::Mix([mix(0), mix(1), mix(2)], 1.0);
         }
-        let a = p[3];
-        let un = |v: f64| if a > 0.0 { v / a } else { 0.0 };
-        let straight = if self.space.is_polar() {
-            [un(p[0]), un(p[1]), p[2]]
+        let a = mix(3);
+        if a > 0.0 {
+            let hue_or_scaled = if self.polar { mix(2) } else { mix(2) / a };
+            Located::Mix([mix(0) / a, mix(1) / a, hue_or_scaled], a)
         } else {
-            [un(p[0]), un(p[1]), un(p[2])]
+            Located::Stop([0.0, 0.0, 0.0, a])
+        }
+    }
+
+    /// Straight encoded colour at gradient parameter `t`.
+    #[inline]
+    fn at(&self, t: f64) -> [f64; 4] {
+        match self.locate(t) {
+            Located::Stop(c) => c,
+            Located::Mix(v, a) => {
+                let rgb = self.decode(v);
+                [rgb[0], rgb[1], rgb[2], a]
+            }
+        }
+    }
+
+    /// The colour at `t` quantised to 16 bits: the same value as
+    /// quantising [`ColorRamp::at`], with the transfer function and the
+    /// rounding folded into one table lookup per component.
+    #[inline]
+    fn at_q16(&self, t: f64, table: &EncodeTable) -> [u16; 4] {
+        match self.locate(t) {
+            Located::Stop(c) => c.map(canvas::unit_to_q16),
+            Located::Mix(v, a) => {
+                let lin = self.to_linear(v);
+                [
+                    table.encode(lin[0]),
+                    table.encode(lin[1]),
+                    table.encode(lin[2]),
+                    canvas::unit_to_q16(a),
+                ]
+            }
+        }
+    }
+}
+
+/// `v ↦ round(65535 · clamp(linear_to_srgb(v), 0, 1))` as a table.
+///
+/// The map is a non-decreasing step function, so it is described
+/// completely by the 65535 positions where it steps up. Each position
+/// is located to the exact `f64` with the reference function itself
+/// (a closed-form first guess, then a walk over neighbouring doubles),
+/// which makes a lookup return precisely what the reference function
+/// returns — without evaluating a power per sample.
+struct EncodeTable {
+    /// `thresholds[k]`: the least `v` whose code is at least `k`
+    /// (`thresholds[0]` is unused; entries past 65535 are `+∞`
+    /// sentinels so a lookup never needs a bounds branch).
+    thresholds: Vec<f64>,
+    /// `coarse[b]`: the code of `v = b / 2¹⁶`.
+    coarse: Vec<u16>,
+    /// `fine[b]`: the code of `v = b / 2²⁰`, for the steep dark end
+    /// `v < 1/16`.
+    fine: Vec<u16>,
+    /// The most codes any bucket spans: how many thresholds a lookup
+    /// has to test after reading its bucket's starting code.
+    max_steps: usize,
+}
+
+impl EncodeTable {
+    /// Below this the fine buckets are used.
+    const FINE_LIMIT: f64 = 1.0 / 16.0;
+    /// Lookups test this many thresholds without branching; a table
+    /// whose buckets span more falls back to a loop for the rest.
+    const UNROLLED_STEPS: usize = 3;
+
+    /// The reference function.
+    #[inline]
+    fn reference(v: f64) -> u16 {
+        canvas::unit_to_q16(linear_to_srgb(v))
+    }
+
+    fn build() -> Self {
+        let mut thresholds = vec![f64::INFINITY; 65536 + 8];
+        thresholds[0] = f64::NEG_INFINITY;
+        for (k, slot) in thresholds.iter_mut().enumerate().take(65536).skip(1) {
+            let code = k as u16;
+            let mut v = srgb_to_linear((k as f64 - 0.5) / 65535.0);
+            // Walk down while the code is still reached, then up to the
+            // first double that reaches it.
+            let mut steps = 0;
+            while Self::reference(v) >= code && steps < 4096 {
+                v = v.next_down();
+                steps += 1;
+            }
+            while Self::reference(v) < code && steps < 8192 {
+                v = v.next_up();
+                steps += 1;
+            }
+            *slot = v;
+        }
+        let coarse: Vec<u16> = (0..=65536u32)
+            .map(|b| Self::reference(f64::from(b) / 65536.0))
+            .collect();
+        let fine: Vec<u16> = (0..=65536u32)
+            .map(|b| Self::reference(f64::from(b) / 1_048_576.0))
+            .collect();
+        let span = |t: &[u16], from: usize| {
+            t[from..]
+                .windows(2)
+                .map(|w| usize::from(w[1] - w[0]))
+                .max()
+                .unwrap_or(0)
         };
-        let rgb = if a > 0.0 {
-            self.decode(straight)
+        // Coarse buckets are only read from FINE_LIMIT up.
+        let max_steps = span(&fine, 0).max(span(&coarse, 4096));
+        Self {
+            thresholds,
+            coarse,
+            fine,
+            max_steps,
+        }
+    }
+
+    fn cell() -> &'static std::sync::OnceLock<EncodeTable> {
+        static TABLE: std::sync::OnceLock<EncodeTable> = std::sync::OnceLock::new();
+        &TABLE
+    }
+
+    /// The shared table, built on first use (a few milliseconds).
+    fn get() -> &'static Self {
+        Self::cell().get_or_init(Self::build)
+    }
+
+    /// Whether [`EncodeTable::get`] is free.
+    fn is_built() -> bool {
+        Self::cell().get().is_some()
+    }
+
+    #[inline]
+    fn encode(&self, v: f64) -> u16 {
+        if v.is_nan() || v <= 0.0 {
+            return 0;
+        }
+        if v >= 1.0 {
+            return 65535;
+        }
+        let mut k = usize::from(if v < Self::FINE_LIMIT {
+            self.fine[(v * 1_048_576.0) as usize]
         } else {
-            [0.0; 3]
-        };
-        [rgb[0], rgb[1], rgb[2], a]
+            self.coarse[(v * 65536.0) as usize]
+        });
+        // The bucket starts at code k; count the steps up to v. The
+        // sentinels past the last threshold stop the count at 65535.
+        for _ in 0..Self::UNROLLED_STEPS {
+            k += usize::from(self.thresholds[k + 1] <= v);
+        }
+        if self.max_steps > Self::UNROLLED_STEPS {
+            while self.thresholds[k + 1] <= v {
+                k += 1;
+            }
+        }
+        k as u16
     }
 }
 
@@ -1415,6 +1610,108 @@ impl GradientField {
     /// Straight-alpha encoded colour of the ramp at parameter `t`.
     pub fn color_at(&self, t: f64) -> [f64; 4] {
         self.ramp.at(t)
+    }
+
+    /// Fill a row a batch at a time: the gradient parameters of up to
+    /// 256 pixels, clamped to `[0, 1]` (NaN as 0), are handed to
+    /// `shade` together with the pixels they belong to. For ramps whose
+    /// colour is a plain function of the clamped parameter
+    /// ([`ColorRamp::simple`]).
+    #[inline]
+    fn batch_rows<P: Copy>(
+        &self,
+        y: u32,
+        x0: u32,
+        out: &mut [P],
+        outside: P,
+        shade: impl Fn(&[f64], &mut [P]),
+    ) {
+        const BATCH: usize = 256;
+        let row = self.geometry.row_term(y);
+        let (lo, hi) = match self.bbox {
+            None => (0, out.len()),
+            Some(b) => {
+                if y < b.y || y - b.y >= b.height {
+                    out.fill(outside);
+                    return;
+                }
+                let lo = (b.x.saturating_sub(x0) as usize).min(out.len());
+                let hi = ((b.x + b.width).saturating_sub(x0) as usize).min(out.len());
+                out[..lo].fill(outside);
+                out[hi..].fill(outside);
+                (lo, hi)
+            }
+        };
+        let mut t = [0f64; BATCH];
+        let mut first = x0 + lo as u32;
+        for chunk in out[lo..hi].chunks_mut(BATCH) {
+            let t = &mut t[..chunk.len()];
+            macro_rules! parameters {
+                ($geometry:expr) => {{
+                    let g = $geometry;
+                    for (i, v) in t.iter_mut().enumerate() {
+                        *v = g.t(first + i as u32, row);
+                    }
+                }};
+            }
+            match self.geometry {
+                g @ Geometry::Vector { .. } => parameters!(g),
+                g @ Geometry::Angle { .. } => parameters!(g),
+                g @ Geometry::Radial { .. } => parameters!(g),
+                g @ Geometry::Conic { .. } => parameters!(g),
+            }
+            for v in t.iter_mut() {
+                *v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+            }
+            shade(t, chunk);
+            first += chunk.len() as u32;
+        }
+    }
+
+    /// Fill a row with `shade(t)`, or `outside` beyond the bounding
+    /// box. The geometry is matched once per row so each arm is a
+    /// straight loop over `x`.
+    #[inline]
+    fn shade_row<P: Copy>(
+        &self,
+        y: u32,
+        x0: u32,
+        out: &mut [P],
+        outside: P,
+        shade: impl Fn(f64) -> P,
+    ) {
+        let row = self.geometry.row_term(y);
+        let (lo, hi) = match self.bbox {
+            None => (0, out.len()),
+            Some(b) => {
+                if y < b.y || y - b.y >= b.height {
+                    out.fill(outside);
+                    return;
+                }
+                let lo = (b.x.saturating_sub(x0) as usize).min(out.len());
+                let hi = ((b.x + b.width).saturating_sub(x0) as usize).min(out.len());
+                out[..lo].fill(outside);
+                out[hi..].fill(outside);
+                (lo, hi)
+            }
+        };
+        let span = &mut out[lo..hi];
+        let first = x0 + lo as u32;
+        // One copy of the loop per geometry: `t` inlines into it.
+        macro_rules! run {
+            ($geometry:expr) => {{
+                let g = $geometry;
+                for (i, o) in span.iter_mut().enumerate() {
+                    *o = shade(g.t(first + i as u32, row));
+                }
+            }};
+        }
+        match self.geometry {
+            g @ Geometry::Vector { .. } => run!(g),
+            g @ Geometry::Angle { .. } => run!(g),
+            g @ Geometry::Radial { .. } => run!(g),
+            g @ Geometry::Conic { .. } => run!(g),
+        }
     }
 
     /// `t` does not depend on `x`.
@@ -1444,24 +1741,65 @@ impl Field for GradientField {
     }
 
     fn fill_row(&self, y: u32, x0: u32, out: &mut [[f64; 4]]) {
-        let row = self.geometry.row_term(y);
-        match self.bbox {
-            None => {
-                for (i, o) in out.iter_mut().enumerate() {
-                    *o = self.ramp.at(self.geometry.t(x0 + i as u32, row));
+        if let Some((c0, delta)) = self.ramp.simple() {
+            self.batch_rows(y, x0, out, self.ramp.outside, |t, o| {
+                for (o, t) in o.iter_mut().zip(t) {
+                    *o = [
+                        c0[0] + delta[0] * t,
+                        c0[1] + delta[1] * t,
+                        c0[2] + delta[2] * t,
+                        1.0,
+                    ];
                 }
-            }
-            Some(b) => {
-                for (i, o) in out.iter_mut().enumerate() {
-                    let x = x0 + i as u32;
-                    *o = if b.contains(x, y) {
-                        self.ramp.at(self.geometry.t(x, row))
-                    } else {
-                        self.ramp.outside
-                    };
-                }
-            }
+            });
+            return;
         }
+        self.shade_row(y, x0, out, self.ramp.outside, |t| self.ramp.at(t));
+    }
+
+    fn fill_row_q16(&self, y: u32, x0: u32, out: &mut [[u16; 4]]) -> bool {
+        if self.ramp.space == GradientColorspace::Srgb {
+            // Two opaque colours, padded: the parameter and the three
+            // mixes are evaluated a batch at a time in flat loops the
+            // compiler can vectorise. Every value is computed by the
+            // same expression as the general path.
+            let Some((c0, delta)) = self.ramp.simple() else {
+                return false;
+            };
+            self.batch_rows(
+                y,
+                x0,
+                out,
+                self.ramp.outside.map(canvas::unit_to_q16),
+                |t, o| {
+                    for (o, t) in o.iter_mut().zip(t) {
+                        *o = [
+                            canvas::unit_to_q16(c0[0] + delta[0] * t),
+                            canvas::unit_to_q16(c0[1] + delta[1] * t),
+                            canvas::unit_to_q16(c0[2] + delta[2] * t),
+                            65535,
+                        ];
+                    }
+                },
+            );
+            return true;
+        }
+        // The other spaces go through the transfer function, which the
+        // table replaces; building it is not worth it for a thumbnail
+        // unless another render already did.
+        let pixels = u64::from(self.width) * u64::from(self.height);
+        if pixels < 1 << 16 && !EncodeTable::is_built() {
+            return false;
+        }
+        let table = EncodeTable::get();
+        self.shade_row(
+            y,
+            x0,
+            out,
+            self.ramp.outside.map(canvas::unit_to_q16),
+            |t| self.ramp.at_q16(t, table),
+        );
+        true
     }
 
     fn uniform_row(&self, y: u32) -> Option<[f64; 4]> {
@@ -2755,5 +3093,117 @@ mod tests {
             img.as_f32().unwrap(),
             &[0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0]
         );
+    }
+
+    // ── the table-encoded integer path ──
+
+    #[test]
+    fn encode_table_equals_the_reference_function() {
+        let table = EncodeTable::get();
+        // Every step position, and the doubles either side of it.
+        for k in 1..=65535usize {
+            let v = table.thresholds[k];
+            for probe in [v.next_down(), v, v.next_up()] {
+                assert_eq!(
+                    table.encode(probe),
+                    EncodeTable::reference(probe),
+                    "around threshold {k}"
+                );
+            }
+            assert_eq!(EncodeTable::reference(v), k as u16);
+            assert_eq!(EncodeTable::reference(v.next_down()), k as u16 - 1);
+        }
+        // Bucket edges and out-of-range inputs.
+        for b in 0..=65536u32 {
+            for v in [f64::from(b) / 65536.0, f64::from(b) / 1_048_576.0] {
+                assert_eq!(table.encode(v), EncodeTable::reference(v));
+                assert_eq!(
+                    table.encode(v.next_down()),
+                    EncodeTable::reference(v.next_down())
+                );
+            }
+        }
+        // No bucket spans more codes than a lookup tests without a loop.
+        assert!(
+            table.max_steps <= EncodeTable::UNROLLED_STEPS,
+            "{}",
+            table.max_steps
+        );
+        for v in [-1.0, -0.0, 0.0, 1e-300, 1.0, 1.0000001, 7.0, f64::NAN] {
+            assert_eq!(table.encode(v), EncodeTable::reference(v), "{v}");
+        }
+        // A dense pseudo-random sweep.
+        let mut state = 0x0123_4567_89AB_CDEFu64;
+        for _ in 0..400_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let v = (state >> 11) as f64 / (1u64 << 53) as f64;
+            // Half the probes crowd the steep dark end.
+            for probe in [v, v * v * v] {
+                assert_eq!(
+                    table.encode(probe),
+                    EncodeTable::reference(probe),
+                    "{probe}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn table_path_renders_what_the_float_path_quantises_to() {
+        let stops =
+            GradientStop::parse_list("#102030, gold 40%, rgba(0,128,255,0.5), white").unwrap();
+        for space in [
+            GradientColorspace::Linear,
+            GradientColorspace::Oklab,
+            GradientColorspace::Oklch,
+            GradientColorspace::Lab,
+            GradientColorspace::Lch,
+        ] {
+            for kind in [
+                GradientKind::Linear,
+                GradientKind::Radial,
+                GradientKind::Conic,
+            ] {
+                // 300 × 240 is above the size at which the table is used.
+                let f = GradientOptions::new(300, 240)
+                    .with_stops(stops.clone())
+                    .with_angle(27.0)
+                    .with_colorspace(space)
+                    .with_spread(GradientSpread::Reflect)
+                    .with_bounding_box(BoundingBox::new(280, 200, 7, 11))
+                    .field(kind)
+                    .unwrap();
+                let mut probe = vec![[0u16; 4]; 300];
+                assert!(f.fill_row_q16(0, 0, &mut probe), "table path not taken");
+                for depth in [SampleDepth::U8, SampleDepth::U16] {
+                    let cfg = RenderConfig::new().with_depth(depth);
+                    let img = canvas::render(&f, &cfg);
+                    for y in 0..240 {
+                        for x in 0..300 {
+                            let want = if (7..287).contains(&x) && (11..211).contains(&y) {
+                                f.color_at(f.parameter(x, y))
+                            } else {
+                                f.ramp.outside
+                            };
+                            let i = ((y * 300 + x) * 4) as usize;
+                            for (c, component) in want.iter().enumerate() {
+                                let q = canvas::unit_to_q16(*component);
+                                match depth {
+                                    SampleDepth::U16 => {
+                                        assert_eq!(img.as_u16().unwrap()[i + c], q)
+                                    }
+                                    _ => assert_eq!(
+                                        u32::from(img.as_u8().unwrap()[i + c]),
+                                        (u32::from(q) + 128) / 257
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

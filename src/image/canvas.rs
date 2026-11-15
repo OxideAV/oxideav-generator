@@ -426,6 +426,12 @@ pub trait Field: Sync {
         None
     }
 
+    /// `Some(colour)` when the whole canvas has that one colour; the
+    /// driver then writes the packed pixel straight into fresh storage.
+    fn uniform(&self) -> Option<[f64; 4]> {
+        None
+    }
+
     /// `Some(y′)`, `y′ < y`, when row `y` is pixel-for-pixel identical
     /// to row `y′` (a pattern periodic in `y`, a colour that depends on
     /// `x` only, a flat canvas). When row `y′` was rendered in the same
@@ -459,21 +465,9 @@ pub fn render_band(field: &dyn Field, cfg: &RenderConfig, y0: u32, rows: u32) ->
     let rows = rows.min(field.height() - y0);
     let n = w as usize * rows as usize * cfg.channels.count();
     let samples = match cfg.depth {
-        SampleDepth::U8 => {
-            let mut v = vec![0u8; n];
-            drive(field, cfg, y0, rows, &mut v);
-            Samples::U8(v)
-        }
-        SampleDepth::U16 => {
-            let mut v = vec![0u16; n];
-            drive(field, cfg, y0, rows, &mut v);
-            Samples::U16(v)
-        }
-        SampleDepth::F32 => {
-            let mut v = vec![0f32; n];
-            drive(field, cfg, y0, rows, &mut v);
-            Samples::F32(v)
-        }
+        SampleDepth::U8 => Samples::U8(samples_of::<u8>(field, cfg, y0, rows, n)),
+        SampleDepth::U16 => Samples::U16(samples_of::<u16>(field, cfg, y0, rows, n)),
+        SampleDepth::F32 => Samples::F32(samples_of::<f32>(field, cfg, y0, rows, n)),
     };
     Image {
         width: w,
@@ -483,8 +477,50 @@ pub fn render_band(field: &dyn Field, cfg: &RenderConfig, y0: u32, rows: u32) ->
     }
 }
 
+/// Allocate and fill the `n` samples of rows `y0 .. y0 + rows`.
+fn samples_of<T: Sample>(
+    field: &dyn Field,
+    cfg: &RenderConfig,
+    y0: u32,
+    rows: u32,
+    n: usize,
+) -> Vec<T> {
+    let row_len = field.width() as usize * cfg.channels.count();
+    // A flat canvas: pack the pixel once, lay out one row, and append
+    // it row after row — a single pass over fresh memory. (A dither
+    // would vary the pixels, so it takes the general path.)
+    if n > 0
+        && (cfg.dither == Dither::None || !T::INTEGER)
+        && let Some(c) = field.uniform()
+    {
+        let mut pixel = [T::default(); 4];
+        let count = cfg.channels.count();
+        pack_row(
+            &[c],
+            &mut pixel[..count],
+            cfg.channels,
+            Dither::None,
+            0,
+            0,
+            0,
+        );
+        let mut row = Vec::with_capacity(row_len);
+        for _ in 0..field.width() {
+            row.extend_from_slice(&pixel[..count]);
+        }
+        let mut v = Vec::with_capacity(n);
+        for _ in 0..rows {
+            v.extend_from_slice(&row);
+        }
+        return v;
+    }
+    let mut v = vec![T::default(); n];
+    drive(field, cfg, y0, rows, &mut v);
+    v
+}
+
 /// One output sample type.
-trait Sample: Copy + Send + Sync + 'static {
+trait Sample: Copy + Default + Send + Sync + 'static {
     /// `true` for the integer depths (dither applies, q16 path usable).
     const INTEGER: bool;
     /// Quantise a unit-range value (no dither).
@@ -495,15 +531,21 @@ trait Sample: Copy + Send + Sync + 'static {
     fn from_q16(q: u16) -> Self;
 }
 
+/// `round(65535 · clamp(v, 0, 1))`.
 #[inline]
-fn unit_to_q16(v: f64) -> u32 {
+pub(crate) fn unit_to_q16(v: f64) -> u16 {
+    unit_to_q16_wide(v) as u16
+}
+
+#[inline]
+fn unit_to_q16_wide(v: f64) -> u32 {
     // NaN clamps to NaN and casts to 0.
     (v.clamp(0.0, 1.0) * 65535.0).round() as u32
 }
 
 #[inline]
 fn unit_to_u8(v: f64) -> u8 {
-    ((unit_to_q16(v) + 128) / 257) as u8
+    ((unit_to_q16_wide(v) + 128) / 257) as u8
 }
 
 impl Sample for u8 {
@@ -526,7 +568,7 @@ impl Sample for u16 {
     const INTEGER: bool = true;
     #[inline]
     fn from_unit(v: f64) -> Self {
-        unit_to_q16(v) as u16
+        unit_to_q16(v)
     }
     #[inline]
     fn from_unit_dithered(v: f64, d: DitherOffset) -> Self {
@@ -720,11 +762,14 @@ fn pack_row<T: Sample>(
 /// Pack one row of 16-bit quantised RGBA into interleaved RGB / RGBA
 /// samples (the caller never takes this path for the grey layouts).
 fn pack_row_q16<T: Sample>(row: &[[u16; 4]], out: &mut [T], channels: Channels) {
-    let n = channels.count();
-    debug_assert!(n >= 3);
-    for (p, o) in row.iter().zip(out.chunks_exact_mut(n)) {
-        for (dst, src) in o.iter_mut().zip(p) {
-            *dst = T::from_q16(*src);
+    if channels == Channels::Rgba {
+        for (p, o) in row.iter().zip(out.as_chunks_mut::<4>().0) {
+            *o = p.map(T::from_q16);
+        }
+    } else {
+        debug_assert_eq!(channels, Channels::Rgb);
+        for (p, o) in row.iter().zip(out.as_chunks_mut::<3>().0) {
+            *o = [T::from_q16(p[0]), T::from_q16(p[1]), T::from_q16(p[2])];
         }
     }
 }
@@ -782,9 +827,12 @@ fn drive_rows<T: Sample>(field: &dyn Field, cfg: &RenderConfig, y0: u32, out: &m
         }
         if !dithered && let Some(c) = field.uniform_row(y) {
             pack_row(&[c], &mut row_out[..n], cfg.channels, Dither::None, 0, 0, y);
-            let (first, rest) = row_out.split_at_mut(n);
-            for px in rest.chunks_exact_mut(n) {
-                px.copy_from_slice(first);
+            // Replicate the pixel by doubling the filled prefix.
+            let mut filled = n;
+            while filled < row_len {
+                let take = filled.min(row_len - filled);
+                row_out.copy_within(..take, filled);
+                filled += take;
             }
             continue;
         }
@@ -831,9 +879,29 @@ impl Field for SolidField {
     fn uniform_row(&self, _y: u32) -> Option<[f64; 4]> {
         Some(self.color)
     }
+    fn uniform(&self) -> Option<[f64; 4]> {
+        Some(self.color)
+    }
     fn row_alias(&self, y: u32) -> Option<u32> {
         y.checked_sub(1)
     }
+}
+
+/// `v / 255` for every byte, tabulated.
+static U8_UNIT: [f64; 256] = {
+    let mut t = [0.0; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = i as f64 / 255.0;
+        i += 1;
+    }
+    t
+};
+
+/// An 8-bit level as a unit-range value, `v / 255`.
+#[inline]
+pub fn u8_to_unit(v: u8) -> f64 {
+    U8_UNIT[v as usize]
 }
 
 /// An existing 8-bit RGBA raster viewed as a [`Field`], so generators
@@ -852,12 +920,7 @@ impl Field for Rgba8Field<'_> {
         let start = ((y as usize) * (self.0.width as usize) + x0 as usize) * 4;
         let src = &self.0.pixels[start..start + out.len() * 4];
         for (o, p) in out.iter_mut().zip(src.as_chunks::<4>().0) {
-            *o = [
-                f64::from(p[0]) / 255.0,
-                f64::from(p[1]) / 255.0,
-                f64::from(p[2]) / 255.0,
-                f64::from(p[3]) / 255.0,
-            ];
+            *o = p.map(u8_to_unit);
         }
     }
 }

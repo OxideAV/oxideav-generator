@@ -6,6 +6,21 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Changed
+
+- Still-image throughput (1920 × 1080, serial, 8-bit RGBA, output
+  byte-identical): axis-aligned linear gradients 44–60×, angled linear
+  2.1×, radial 2.8×, linear-light gradients 1.7–3.4×, two-colour
+  plasma 1.7×, Perlin 1.4×, value noise 1.6×, Worley 1.5×,
+  checkerboard 1.9× (README, "Still-image throughput"). Repeating rows
+  are copied; two-colour gradients run in vectorisable batches; the
+  sRGB transfer function is an exact table at integer depths; lattice
+  noise is separable per octave; plasma skips the grid cells that
+  cannot reach the canvas.
+- `plasma` takes `threads=` (`PlasmaOptions::with_threads`): the three
+  channel displacement fields are computed side by side.
+- The crate depends on `oxideav-pixfmt` for colour models.
+
 ### Added
 
 - `image::canvas`: every still-image generator can be delivered as

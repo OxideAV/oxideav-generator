@@ -7,11 +7,44 @@
 //! Accuracy is a few units in the last place — far below what any
 //! sample depth resolves.
 
+/// `1 / (2i + 1)` for `i = 0..=10`: the coefficients of the odd
+/// series of `atanh`.
+const ODD_RECIPROCALS: [f64; 11] = {
+    let mut t = [0.0; 11];
+    let mut i = 0;
+    while i < 11 {
+        t[i] = 1.0 / (2 * i + 1) as f64;
+        i += 1;
+    }
+    t
+};
+
+/// Maclaurin coefficients of `cos` (`(−1)ⁱ / (2i)!`) and of
+/// `sin x / x` (`(−1)ⁱ / (2i + 1)!`), `i = 0..=9`.
+const COS_SIN_COEFFICIENTS: ([f64; 10], [f64; 10]) = {
+    let mut c = [0.0; 10];
+    let mut s = [0.0; 10];
+    let mut factorial = 1.0; // (2i)!
+    let mut sign = 1.0;
+    let mut i = 0;
+    while i < 10 {
+        if i > 0 {
+            factorial *= ((2 * i - 1) * (2 * i)) as f64;
+        }
+        c[i] = sign / factorial;
+        s[i] = sign / (factorial * (2 * i + 1) as f64);
+        sign = -sign;
+        i += 1;
+    }
+    (c, s)
+};
+
 /// Natural logarithm of a positive, finite, normal `x`.
 ///
 /// `x = m · 2ᵉ` with `m ∈ [√½, √2)`; then
 /// `ln m = 2·atanh(z)`, `z = (m − 1) / (m + 1)`, `|z| < 0.1716`, by the
 /// odd series `z + z³/3 + … + z²¹/21` (truncation below `10⁻¹⁷`).
+#[inline]
 pub(crate) fn ln(x: f64) -> f64 {
     debug_assert!(x > 0.0 && x.is_finite());
     let bits = x.to_bits();
@@ -24,11 +57,9 @@ pub(crate) fn ln(x: f64) -> f64 {
     }
     let z = (m - 1.0) / (m + 1.0);
     let z2 = z * z;
-    let mut s = 1.0 / 21.0;
-    let mut k = 19.0;
-    while k >= 1.0 {
-        s = 1.0 / k + z2 * s;
-        k -= 2.0;
+    let mut s = ODD_RECIPROCALS[10];
+    for r in ODD_RECIPROCALS[..10].iter().rev() {
+        s = r + z2 * s;
     }
     2.0 * z * s + e as f64 * std::f64::consts::LN_2
 }
@@ -38,6 +69,7 @@ pub(crate) fn ln(x: f64) -> f64 {
 /// The angle is folded into the first octant (so the eight principal
 /// directions are exact) and evaluated by the Maclaurin series of
 /// `sin` and `cos` on `[0, π/4]`, to `x¹⁹` and `x¹⁸`.
+#[inline]
 pub(crate) fn cos_sin_turns(turns: f64) -> (f64, f64) {
     let t = turns - turns.floor(); // [0, 1)
     let eighths = t * 8.0;
@@ -48,14 +80,12 @@ pub(crate) fn cos_sin_turns(turns: f64) -> (f64, f64) {
     let x = (if odd { 1.0 - frac } else { frac }) * std::f64::consts::FRAC_PI_4;
     let x2 = x * x;
     // Horner forms of the two series.
-    let mut c = 1.0;
-    let mut s = 1.0;
-    let mut k = 18.0;
-    while k >= 2.0 {
-        // cos: 1 − x²/(k(k−1)) · (…);  sin: 1 − x²/((k+1)k) · (…)
-        c = 1.0 - x2 / (k * (k - 1.0)) * c;
-        s = 1.0 - x2 / ((k + 1.0) * k) * s;
-        k -= 2.0;
+    let (cc, sc) = &COS_SIN_COEFFICIENTS;
+    let mut c = cc[9];
+    let mut s = sc[9];
+    for i in (0..9).rev() {
+        c = cc[i] + x2 * c;
+        s = sc[i] + x2 * s;
     }
     let (near, far) = (c, x * s); // cos x, sin x with x ∈ [0, π/4]
     let (a, b) = if odd { (far, near) } else { (near, far) };

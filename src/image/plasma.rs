@@ -89,6 +89,9 @@ pub struct PlasmaOptions {
     /// Base gradient (size, colours, and every `gradient:` define).
     /// `from` / `to` are the two plasma colours.
     pub gradient: GradientOptions,
+    /// Worker budget for the three colour-channel displacement fields
+    /// (`1`, the default, is serial; the output does not depend on it).
+    pub threads: usize,
 }
 
 /// Default coarsest-level displacement half-range for gradient mode —
@@ -112,7 +115,15 @@ impl PlasmaOptions {
             roughness: DEFAULT_ROUGHNESS,
             amplitude: DEFAULT_AMPLITUDE,
             gradient: GradientOptions::new(width.max(2), height.max(2)),
+            threads: 1,
         }
+    }
+
+    /// Grant up to `threads` workers (the three channel fields are
+    /// independent). The output is identical at any budget.
+    pub fn with_threads(mut self, threads: usize) -> Self {
+        self.threads = threads.max(1);
+        self
     }
 
     pub fn with_kind(mut self, kind: PlasmaKind) -> Self {
@@ -203,6 +214,7 @@ impl PlasmaOptions {
             roughness,
             amplitude,
             gradient,
+            threads: q_u32(query, "threads", 1)?.clamp(1, 256) as usize,
         })
     }
 }
@@ -243,7 +255,13 @@ pub fn render_opts(opts: &PlasmaOptions) -> Result<Rgba8Image> {
                 ..opts.gradient.clone()
             };
             let img = gradient::render_linear(&base)?;
-            Ok(displace(img, opts.seed, opts.amplitude, opts.roughness))
+            Ok(displace(
+                img,
+                opts.seed,
+                opts.amplitude,
+                opts.roughness,
+                opts.threads,
+            ))
         }
         PlasmaKind::Fractal => {
             let img = random_corner_base(w, h, opts.seed, opts.gradient.from[3]);
@@ -252,18 +270,48 @@ pub fn render_opts(opts: &PlasmaOptions) -> Result<Rgba8Image> {
                 opts.seed ^ 0x5A5A_5A5A,
                 opts.amplitude * FRACTAL_AMPLITUDE_SCALE,
                 opts.roughness,
+                opts.threads,
             ))
         }
     }
 }
 
-/// The three per-channel displacement fields of a plasma.
-fn channel_fields(w: usize, h: usize, seed: u32, amplitude: f32, roughness: f32) -> [Vec<f32>; 3] {
-    [
-        displacement_field(w, h, seed.wrapping_add(0x1000_0001), amplitude, roughness),
-        displacement_field(w, h, seed.wrapping_add(0x2000_0002), amplitude, roughness),
-        displacement_field(w, h, seed.wrapping_add(0x3000_0003), amplitude, roughness),
-    ]
+/// The three per-channel displacement fields of a plasma, computed
+/// side by side when a thread budget allows.
+fn channel_fields(
+    w: usize,
+    h: usize,
+    seed: u32,
+    amplitude: f32,
+    roughness: f32,
+    threads: usize,
+) -> [Vec<f32>; 3] {
+    let seeds = [
+        seed.wrapping_add(0x1000_0001),
+        seed.wrapping_add(0x2000_0002),
+        seed.wrapping_add(0x3000_0003),
+    ];
+    let field = |s: u32| displacement_field(w, h, s, amplitude, roughness);
+    if threads < 2 {
+        return seeds.map(field);
+    }
+    std::thread::scope(|scope| {
+        if threads == 2 {
+            let green = scope.spawn(|| field(seeds[1]));
+            let red = field(seeds[0]);
+            let blue = field(seeds[2]);
+            [red, green.join().expect("plasma worker"), blue]
+        } else {
+            let green = scope.spawn(|| field(seeds[1]));
+            let blue = scope.spawn(|| field(seeds[2]));
+            let red = field(seeds[0]);
+            [
+                red,
+                green.join().expect("plasma worker"),
+                blue.join().expect("plasma worker"),
+            ]
+        }
+    })
 }
 
 /// A plasma at full sample precision: the 8-bit base (gradient, corner
@@ -302,6 +350,7 @@ impl PlasmaField {
                         opts.seed,
                         opts.amplitude,
                         opts.roughness,
+                        opts.threads,
                     )),
                 }
             }
@@ -313,6 +362,7 @@ impl PlasmaField {
                     opts.seed ^ 0x5A5A_5A5A,
                     opts.amplitude * FRACTAL_AMPLITUDE_SCALE,
                     opts.roughness,
+                    opts.threads,
                 )),
             },
         })
@@ -360,10 +410,16 @@ pub fn render_image(query: &BTreeMap<String, String>) -> Result<Image> {
 
 /// Add one independent signed displacement field per colour channel
 /// (alpha is left alone) and clamp.
-fn displace(mut img: Rgba8Image, seed: u32, amplitude: f32, roughness: f32) -> Rgba8Image {
+fn displace(
+    mut img: Rgba8Image,
+    seed: u32,
+    amplitude: f32,
+    roughness: f32,
+    threads: usize,
+) -> Rgba8Image {
     let w = img.width as usize;
     let h = img.height as usize;
-    let fields = channel_fields(w, h, seed, amplitude, roughness);
+    let fields = channel_fields(w, h, seed, amplitude, roughness, threads);
     for i in 0..w * h {
         for (c, field) in fields.iter().enumerate() {
             let v = img.pixels[i * 4 + c] as f32 + field[i];
@@ -415,6 +471,23 @@ fn random_corner_base(w: u32, h: u32, seed: u32, alpha: u8) -> Rgba8Image {
     img
 }
 
+/// How far the recursion has to reach at the level whose half-step is
+/// `half`, as the largest `(x, y)` a square-step cell may have and
+/// still influence the visible `w × h` corner of the grid.
+///
+/// A square-step cell reads cells `half` away, written by the same
+/// level's diamond step, which in turn reads the coarser grid `half`
+/// further out; so if cells up to `N` are needed once a level is done,
+/// its diamond step is needed up to `N + half` and the next coarser
+/// level up to `N + 2·half`. From `N = w − 1` at the finest level
+/// (`half = 1`) that gives `N(half) = w − 1 + 2·(half − 1)`. Cells
+/// beyond the reach are never read by a visible cell: the recursion
+/// skips their arithmetic and only draws their random number, so the
+/// random sequence — and with it every visible value — is unchanged.
+fn reach(w: usize, h: usize, half: usize) -> (usize, usize) {
+    (w - 1 + 2 * (half - 1), h - 1 + 2 * (half - 1))
+}
+
 /// Signed diamond-square displacement field: corners at 0, each new
 /// point is the neighbour average plus a uniform offset in
 /// `(−amp_k, amp_k)` with `amp_k = amplitude · roughness^k` at
@@ -439,10 +512,16 @@ pub fn displacement_field(
     let mut amp = amplitude;
     while step > 1 {
         let half = step / 2;
+        let (reach_x, reach_y) = reach(w, h, half);
         let mut y = half;
         while y < n {
             let mut x = half;
             while x < n {
+                if x > reach_x + half || y > reach_y + half {
+                    rng.skip();
+                    x += step;
+                    continue;
+                }
                 let avg = (grid[(y - half) * n + (x - half)]
                     + grid[(y - half) * n + (x + half)]
                     + grid[(y + half) * n + (x - half)]
@@ -462,6 +541,11 @@ pub fn displacement_field(
             };
             let mut x = x_off;
             while x < n {
+                if x > reach_x || y > reach_y {
+                    rng.skip();
+                    x += step;
+                    continue;
+                }
                 let mut sum = 0.0f32;
                 let mut count = 0.0f32;
                 if y >= half {
@@ -522,11 +606,17 @@ fn diamond_square(w: usize, h: usize, seed: u32, roughness: f32) -> Vec<f32> {
     let mut amp = 1.0f32;
     while step > 1 {
         let half = step / 2;
+        let (reach_x, reach_y) = reach(w, h, half);
         // Diamond step
         let mut y = half;
         while y < n {
             let mut x = half;
             while x < n {
+                if x > reach_x + half || y > reach_y + half {
+                    rng.skip();
+                    x += step;
+                    continue;
+                }
                 let avg = (grid[(y - half) * n + (x - half)]
                     + grid[(y - half) * n + (x + half)]
                     + grid[(y + half) * n + (x - half)]
@@ -547,6 +637,11 @@ fn diamond_square(w: usize, h: usize, seed: u32, roughness: f32) -> Vec<f32> {
             };
             let mut x = x_off;
             while x < n {
+                if x > reach_x || y > reach_y {
+                    rng.skip();
+                    x += step;
+                    continue;
+                }
                 let mut sum = 0.0f32;
                 let mut count = 0.0f32;
                 if y >= half {
@@ -596,6 +691,11 @@ impl Lcg {
                 .wrapping_mul(0x9E37_79B9_7F4A_7C15)
                 .wrapping_add(0xCAFE_F00D_DEAD_BEEF),
         }
+    }
+    /// Advance past one draw without using it.
+    #[inline]
+    fn skip(&mut self) {
+        self.step();
     }
     fn step(&mut self) -> u64 {
         self.state = self
@@ -903,6 +1003,63 @@ mod tests {
             }
             q.insert("threads".into(), "3".into());
             assert_eq!(deep, render_image(&q).unwrap());
+        }
+    }
+
+    #[test]
+    fn reach_limited_recursion_equals_the_full_grid() {
+        // A full 129 × 129 (or 65 × 65) grid skips nothing; any smaller
+        // canvas on the same grid must be its top-left corner.
+        for (w, h, n) in [
+            (100usize, 37usize, 129usize),
+            (37, 100, 129),
+            (66, 66, 129),
+            (129, 2, 129),
+            (2, 129, 129),
+            (70, 128, 129),
+            (33, 64, 65),
+            (64, 48, 65),
+            (5, 3, 5),
+        ] {
+            let full = displacement_field(n, n, 9, 48.0, 0.82);
+            let part = displacement_field(w, h, 9, 48.0, 0.82);
+            let full_unit = diamond_square(n, n, 9, 0.7);
+            let part_unit = diamond_square(w, h, 9, 0.7);
+            for y in 0..h {
+                for x in 0..w {
+                    assert_eq!(
+                        part[y * w + x].to_bits(),
+                        full[y * n + x].to_bits(),
+                        "{w}x{h} displacement at ({x}, {y})"
+                    );
+                    assert_eq!(
+                        part_unit[y * w + x].to_bits(),
+                        full_unit[y * n + x].to_bits(),
+                        "{w}x{h} height at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn thread_budget_does_not_change_the_plasma() {
+        for kind in [
+            PlasmaKind::Gradient,
+            PlasmaKind::Fractal,
+            PlasmaKind::Palette,
+        ] {
+            let opts = PlasmaOptions::new(70, 45).with_kind(kind).with_seed(4);
+            let serial = render_opts(&opts).unwrap();
+            for threads in [2, 3, 8] {
+                assert_eq!(
+                    serial.pixels,
+                    render_opts(&opts.clone().with_threads(threads))
+                        .unwrap()
+                        .pixels,
+                    "{kind:?} with {threads} threads"
+                );
+            }
         }
     }
 }

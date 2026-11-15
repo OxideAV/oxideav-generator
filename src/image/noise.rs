@@ -52,8 +52,9 @@ use crate::source::{q_f64, q_str, q_u32};
 
 /// How a noise scalar becomes a colour.
 enum Colouring {
-    /// The shared 256-entry palette, indexed by `⌊255·s⌋`.
-    Palette(Box<[[u8; 4]; 256]>),
+    /// The shared 256-entry palette, indexed by `⌊255·s⌋`, as
+    /// unit-range colours.
+    Palette(Box<[[f64; 4]; 256]>),
     /// A gradient colour ramp evaluated at `s` (full precision).
     Ramp(Box<GradientField>),
 }
@@ -88,7 +89,25 @@ pub struct NoiseField {
     perm: Box<[u8; 512]>,
     basis: Basis,
     colouring: Colouring,
+    /// Per-octave, per-column lattice terms of the Perlin / value sum
+    /// (`columns[octave][x]`); empty for the other bases.
+    columns: Vec<Vec<Column>>,
 }
+
+/// Everything about a lattice sample that depends on `x` only.
+#[derive(Clone, Copy)]
+struct Column {
+    /// Fractional lattice position `x·f − ⌊x·f⌋`.
+    xf: f32,
+    /// `fade(xf)`.
+    u: f32,
+    /// Permutation entries of the two lattice columns either side.
+    pa: u8,
+    pb: u8,
+}
+
+/// Pixels handled per batch by the row evaluators.
+const BATCH: usize = 256;
 
 impl NoiseField {
     /// Parse a `generate://noise?…` query:
@@ -175,15 +194,251 @@ impl NoiseField {
                 GradientOptions::from_query(&gq)?.field(GradientKind::Linear)?,
             ))
         } else {
-            Colouring::Palette(Box::new(default_palette()))
+            Colouring::Palette(Box::new(
+                default_palette().map(|c| c.map(canvas::u8_to_unit)),
+            ))
         };
+        let perm = Box::new(build_perm(seed));
+        let mut columns = Vec::new();
+        if let Basis::Fractal {
+            mode: NoiseMode::Perlin | NoiseMode::Value,
+            octaves,
+            base_freq,
+            lacunarity,
+            ..
+        } = basis
+        {
+            let mut freq = base_freq;
+            for _ in 0..octaves {
+                columns.push(
+                    (0..w)
+                        .map(|x| {
+                            let p = (x as f32) * freq;
+                            let xi = p.floor() as i32;
+                            let xf = p - p.floor();
+                            Column {
+                                xf,
+                                u: fade(xf),
+                                pa: perm[(xi & 0xFF) as usize],
+                                pb: perm[((xi + 1) & 0xFF) as usize],
+                            }
+                        })
+                        .collect(),
+                );
+                freq *= lacunarity;
+            }
+        }
         Ok(Self {
             width: w,
             height: h,
-            perm: Box::new(build_perm(seed)),
+            perm,
             basis,
             colouring,
+            columns,
         })
+    }
+
+    /// The scalars of pixels `(x0, y) .. (x0 + out.len(), y)`: the same
+    /// values as [`NoiseField::scalar`], with the row-only and
+    /// column-only parts of the lattice sums taken out of the pixel
+    /// loop.
+    fn scalars(&self, y: u32, x0: u32, out: &mut [f32]) {
+        for (i, chunk) in out.chunks_mut(BATCH).enumerate() {
+            self.scalars_batch(y, x0 + (i * BATCH) as u32, chunk);
+        }
+    }
+
+    /// Worley scalars of a span: the feature points of the three cell
+    /// rows around `y` are generated once for the whole span instead of
+    /// once per pixel; candidates are visited in the same order as
+    /// [`worley_scalar`], so the values are the same.
+    fn worley_batch(
+        &self,
+        y: u32,
+        x0: u32,
+        out: &mut [f32],
+        k: usize,
+        points_per_cell: usize,
+        metric: DistMetric,
+        cell_size: f32,
+        seed: u32,
+    ) {
+        if out.is_empty() {
+            return;
+        }
+        let cell_of = |v: u32| ((v as f32) / cell_size).floor() as i32;
+        let py = y as f32;
+        let cy = cell_of(y);
+        let first = cell_of(x0) - 1;
+        let last = cell_of(x0 + out.len() as u32 - 1) + 1;
+        let columns = (last - first + 1) as usize;
+        // features[(row * columns + column) * points + p]
+        let mut features = Vec::with_capacity(3 * columns * points_per_cell);
+        for dcy in -1..=1 {
+            for cx in first..=last {
+                for p in 0..points_per_cell {
+                    features.push(feature_point(cx, cy + dcy, p as u32, seed, cell_size));
+                }
+            }
+        }
+        // Rank candidates by a key that orders like the distance: the
+        // squared distance for the Euclidean metric (the square root is
+        // monotone and correctly rounded, so the k-th smallest distance
+        // is the root of the k-th smallest square), the distance itself
+        // otherwise.
+        let key = |px: f32, (fx, fy): (f32, f32)| -> f32 {
+            match metric {
+                DistMetric::Euclidean => {
+                    let dx = px - fx;
+                    let dy = py - fy;
+                    dx * dx + dy * dy
+                }
+                DistMetric::Manhattan => (px - fx).abs() + (py - fy).abs(),
+                DistMetric::Chebyshev => (px - fx).abs().max((py - fy).abs()),
+            }
+        };
+        let finish = |key: f32| -> f32 {
+            let d = if matches!(metric, DistMetric::Euclidean) {
+                key.sqrt()
+            } else {
+                key
+            };
+            (d / cell_size).clamp(0.0, 1.0)
+        };
+        let rows: [&[(f32, f32)]; 3] = [
+            &features[..columns * points_per_cell],
+            &features[columns * points_per_cell..2 * columns * points_per_cell],
+            &features[2 * columns * points_per_cell..],
+        ];
+        for (i, o) in out.iter_mut().enumerate() {
+            let px = (x0 + i as u32) as f32;
+            let cx = ((px / cell_size).floor() as i32 - first) as usize;
+            // The three cells either side of the pixel's column.
+            let span = (cx - 1) * points_per_cell..(cx + 2) * points_per_cell;
+            if k == 1 {
+                let mut best = f32::INFINITY;
+                for row in rows {
+                    for &f in &row[span.clone()] {
+                        let d = key(px, f);
+                        if d < best {
+                            best = d;
+                        }
+                    }
+                }
+                *o = finish(best);
+                continue;
+            }
+            let mut nearest = [f32::INFINITY; 4];
+            for row in rows {
+                for &f in &row[span.clone()] {
+                    let d = key(px, f);
+                    for slot_i in 0..k {
+                        if d < nearest[slot_i] {
+                            for j in (slot_i + 1..k).rev() {
+                                nearest[j] = nearest[j - 1];
+                            }
+                            nearest[slot_i] = d;
+                            break;
+                        }
+                    }
+                }
+            }
+            *o = finish(nearest[k - 1]);
+        }
+    }
+
+    /// [`NoiseField::scalars`] for at most [`BATCH`] pixels.
+    fn scalars_batch(&self, y: u32, x0: u32, out: &mut [f32]) {
+        let perm = &*self.perm;
+        let (mode, octaves, base_freq, lacunarity, gain) = match self.basis {
+            Basis::Worley {
+                k,
+                points_per_cell,
+                metric,
+                cell_size,
+                seed,
+            } => {
+                self.worley_batch(y, x0, out, k, points_per_cell, metric, cell_size, seed);
+                return;
+            }
+            Basis::Fractal {
+                mode: NoiseMode::Simplex,
+                octaves,
+                base_freq,
+                lacunarity,
+                gain,
+            } => {
+                // Not separable: the same sum as `scalar`, with the
+                // basis chosen outside the pixel loop.
+                let fy = y as f32;
+                for (i, o) in out.iter_mut().enumerate() {
+                    let fx = (x0 + i as u32) as f32;
+                    let mut amp = 1.0f32;
+                    let mut freq = base_freq;
+                    let mut total = 0.0f32;
+                    let mut max_total = 0.0f32;
+                    for _ in 0..octaves {
+                        total += amp * simplex2(perm, fx * freq, fy * freq);
+                        max_total += amp;
+                        amp *= gain;
+                        freq *= lacunarity;
+                    }
+                    *o = ((total / max_total) * 0.5 + 0.5).clamp(0.0, 1.0);
+                }
+                return;
+            }
+            Basis::Fractal {
+                mode,
+                octaves,
+                base_freq,
+                lacunarity,
+                gain,
+            } => (mode, octaves, base_freq, lacunarity, gain),
+        };
+        let mut total = [0.0f32; BATCH];
+        let total = &mut total[..out.len()];
+        let mut amp = 1.0f32;
+        let mut freq = base_freq;
+        let mut max_total = 0.0f32;
+        for octave in 0..octaves as usize {
+            let p = (y as f32) * freq;
+            let yi = p.floor() as i32;
+            let yf = p - p.floor();
+            let v = fade(yf);
+            let cols = &self.columns[octave][x0 as usize..x0 as usize + out.len()];
+            let corner = |column: u8, dy: i32| perm[((column as i32 + yi + dy) & 0xFF) as usize];
+            match mode {
+                NoiseMode::Perlin => {
+                    for (t, c) in total.iter_mut().zip(cols) {
+                        let (aa, ab) = (corner(c.pa, 0), corner(c.pa, 1));
+                        let (ba, bb) = (corner(c.pb, 0), corner(c.pb, 1));
+                        let x1 = lerp(grad(aa, c.xf, yf), grad(ba, c.xf - 1.0, yf), c.u);
+                        let x2 = lerp(
+                            grad(ab, c.xf, yf - 1.0),
+                            grad(bb, c.xf - 1.0, yf - 1.0),
+                            c.u,
+                        );
+                        *t += amp * lerp(x1, x2, v);
+                    }
+                }
+                _ => {
+                    let unit = |h: u8| (h as f32) * (2.0 / 255.0) - 1.0;
+                    for (t, c) in total.iter_mut().zip(cols) {
+                        let (aa, ab) = (unit(corner(c.pa, 0)), unit(corner(c.pa, 1)));
+                        let (ba, bb) = (unit(corner(c.pb, 0)), unit(corner(c.pb, 1)));
+                        let x1 = lerp(aa, ba, c.u);
+                        let x2 = lerp(ab, bb, c.u);
+                        *t += amp * lerp(x1, x2, v);
+                    }
+                }
+            }
+            max_total += amp;
+            amp *= gain;
+            freq *= lacunarity;
+        }
+        for (o, t) in out.iter_mut().zip(total.iter()) {
+            *o = ((t / max_total) * 0.5 + 0.5).clamp(0.0, 1.0);
+        }
     }
 
     /// The noise scalar at pixel `(x, y)`, in `[0, 1]`.
@@ -235,15 +490,25 @@ impl Field for NoiseField {
     }
 
     fn fill_row(&self, y: u32, x0: u32, out: &mut [[f64; 4]]) {
-        for (i, o) in out.iter_mut().enumerate() {
-            let s = self.scalar(x0 + i as u32, y);
-            *o = match &self.colouring {
+        let mut scalars = [0.0f32; BATCH];
+        let mut x = x0;
+        for chunk in out.chunks_mut(BATCH) {
+            let scalars = &mut scalars[..chunk.len()];
+            self.scalars(y, x, scalars);
+            match &self.colouring {
                 Colouring::Palette(palette) => {
-                    let idx = (s * 255.0) as usize;
-                    palette[idx.min(255)].map(|v| f64::from(v) / 255.0)
+                    for (o, s) in chunk.iter_mut().zip(scalars.iter()) {
+                        let idx = (s * 255.0) as usize;
+                        *o = palette[idx.min(255)];
+                    }
                 }
-                Colouring::Ramp(ramp) => ramp.color_at(f64::from(s)),
-            };
+                Colouring::Ramp(ramp) => {
+                    for (o, s) in chunk.iter_mut().zip(scalars.iter()) {
+                        *o = ramp.color_at(f64::from(*s));
+                    }
+                }
+            }
+            x += chunk.len() as u32;
         }
     }
 }
@@ -394,6 +659,7 @@ fn perlin2(perm: &[u8; 512], x: f32, y: f32) -> f32 {
 ///
 /// Pure first-principles maths transcribed from Ken Perlin's 2001
 /// SIGGRAPH note on improved noise.
+#[inline(always)]
 fn simplex2(perm: &[u8; 512], x: f32, y: f32) -> f32 {
     // Skew the input space to determine which simplex cell we're in.
     const F2: f32 = 0.366_025_42; // (sqrt(3) - 1) / 2
@@ -1236,6 +1502,29 @@ mod tests {
             let serial = render_image(&q).unwrap();
             q.insert("threads".into(), "4".into());
             assert_eq!(serial, render_image(&q).unwrap(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn row_evaluation_equals_per_pixel_evaluation() {
+        for kind in ["perlin", "value", "simplex", "worley"] {
+            for extra in [
+                vec![],
+                vec![("lacunarity", "2.7"), ("gain", "0.65"), ("octaves", "6")],
+            ] {
+                let mut q = map(&[("w", "700"), ("h", "9"), ("scale", "23"), ("seed", "5")]);
+                q.insert("type".into(), kind.into());
+                q.extend(map(&extra));
+                let f = NoiseField::from_query(&q).unwrap();
+                let mut row = vec![0.0f32; 300];
+                for y in 0..9 {
+                    // An offset, batch-straddling span.
+                    f.scalars(y, 311, &mut row[..]);
+                    for (i, s) in row.iter().enumerate() {
+                        assert_eq!(s.to_bits(), f.scalar(311 + i as u32, y).to_bits(), "{kind}");
+                    }
+                }
+            }
         }
     }
 }
