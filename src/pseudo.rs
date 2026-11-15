@@ -43,7 +43,7 @@
 //! `gradient:direction`, `gradient:extent`, `gradient:bounding-box`,
 //! `gradient:center`, `gradient:radii` — and, without a namespace, any
 //! key of the generator's `generate://` query (`stops`, `spread`,
-//! `colorspace`, `hue`, `size`, `amount`, …). A namespaced define
+//! `colorspace`, `hue`, `shape`, `size`, `amount`, …). A namespaced define
 //! addressed to a different generator (for example `gradient:angle` on
 //! an `xc:` image) is accepted and ignored, as a define is a setting
 //! of the session rather than of one image.

@@ -51,7 +51,11 @@
 //!   the `max` of the same four, `ClosestCorner` / `FarthestCorner` →
 //!   the smallest / largest distance to the four corner pixels. With
 //!   the default centre they reduce to `Minimum`, `Maximum`,
-//!   `Diagonal` and `Diagonal`.
+//!   `Diagonal` and `Diagonal`. `shape = Ellipse` gives the same four
+//!   extents independent radii instead: the nearer (farther) vertical
+//!   side sets `rx` and the nearer (farther) horizontal side `ry`, and
+//!   the corner forms scale that side ellipse by `√2`, which is the
+//!   ellipse of the same proportions through the corner.
 //! - a zero radius is a step: `t = 0` on the axis, `1` off it.
 //!
 //! **Bounding box** `WxH+X+Y` (must fit inside the canvas, like
@@ -280,6 +284,38 @@ impl GradientExtent {
         self.radii_at(w, h, hx, hy)
     }
 
+    /// `(rx, ry)` of the *ellipse* form of the side / corner extents,
+    /// for a `w × h` canvas and radial centre `(cx, cy)`:
+    ///
+    /// - `ClosestSide` → the nearer vertical side horizontally and the
+    ///   nearer horizontal side vertically, `(min(dl, dr), min(dt, db))`;
+    /// - `FarthestSide` → `(max(dl, dr), max(dt, db))`;
+    /// - `ClosestCorner` / `FarthestCorner` → the ellipse with the
+    ///   aspect ratio of the matching side ellipse that passes through
+    ///   that corner. A corner at offset `(a, b)` lies on the ellipse
+    ///   `(a·√2, b·√2)`, which has the ratio `a : b` of the side
+    ///   ellipse `(a, b)`, so the radii are the side radii times `√2`.
+    ///
+    /// The other extents have no ellipse form and return
+    /// [`GradientExtent::radii_at`].
+    pub fn ellipse_radii_at(self, w: u32, h: u32, cx: f64, cy: f64) -> (f64, f64) {
+        let right = (w.max(1) - 1) as f64;
+        let bottom = (h.max(1) - 1) as f64;
+        let (dl, dr) = (cx.abs(), (right - cx).abs());
+        let (dt, db) = (cy.abs(), (bottom - cy).abs());
+        let near = (dl.min(dr), dt.min(db));
+        let far = (dl.max(dr), dt.max(db));
+        let through_corner =
+            |(a, b): (f64, f64)| (a * std::f64::consts::SQRT_2, b * std::f64::consts::SQRT_2);
+        match self {
+            Self::ClosestSide => near,
+            Self::FarthestSide => far,
+            Self::ClosestCorner => through_corner(near),
+            Self::FarthestCorner => through_corner(far),
+            other => other.radii_at(w, h, cx, cy),
+        }
+    }
+
     /// `(rx, ry)` for a `w × h` canvas and radial centre `(cx, cy)`.
     /// Only the side / corner extents depend on the centre.
     pub fn radii_at(self, w: u32, h: u32, cx: f64, cy: f64) -> (f64, f64) {
@@ -352,6 +388,30 @@ impl GradientColorspace {
     /// The third component is a hue angle.
     fn is_polar(self) -> bool {
         matches!(self, Self::Oklch | Self::Lch)
+    }
+}
+
+/// Outline of a radial gradient whose size comes from a side / corner
+/// extent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum GradientShape {
+    /// Equal radii ([`GradientExtent::radii_at`]).
+    #[default]
+    Circle,
+    /// Independent horizontal and vertical radii
+    /// ([`GradientExtent::ellipse_radii_at`]).
+    Ellipse,
+}
+
+impl GradientShape {
+    /// `circle` or `ellipse`.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "circle" => Self::Circle,
+            "ellipse" => Self::Ellipse,
+            _ => return None,
+        })
     }
 }
 
@@ -622,10 +682,12 @@ impl BoundingBox {
     }
 }
 
-/// Everything that shapes a two-stop gradient. Build with
+/// Everything that shapes a gradient. Build with
 /// [`GradientOptions::new`] + the `with_*` setters, or from a
 /// `generate://gradient?…` query via [`GradientOptions::from_query`],
-/// then hand to [`render_linear`] / [`render_radial`].
+/// then hand to [`render_linear`] / [`render_radial`] /
+/// [`render_conic`] for 8-bit RGBA, or take
+/// [`GradientOptions::field`] to [`canvas::render`] for any depth.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct GradientOptions {
@@ -655,6 +717,8 @@ pub struct GradientOptions {
     pub spread: GradientSpread,
     /// Hue path in the polar colour spaces.
     pub hue: HueArc,
+    /// Circle or ellipse form of the side / corner radial extents.
+    pub shape: GradientShape,
 }
 
 impl GradientOptions {
@@ -676,7 +740,15 @@ impl GradientOptions {
             stops: Vec::new(),
             spread: GradientSpread::Pad,
             hue: HueArc::Shorter,
+            shape: GradientShape::Circle,
         }
+    }
+
+    /// Circle (default) or ellipse form of the `closest-side` /
+    /// `farthest-side` / `closest-corner` / `farthest-corner` extents.
+    pub fn with_shape(mut self, shape: GradientShape) -> Self {
+        self.shape = shape;
+        self
     }
 
     /// Replace `from` / `to` by an explicit stop list (two or more
@@ -834,6 +906,13 @@ impl GradientOptions {
                 ))
             })?;
         }
+        if let Some(shape) = query.get("shape") {
+            opts.shape = GradientShape::parse(shape).ok_or_else(|| {
+                Error::invalid(format!(
+                    "gradient: unknown shape {shape:?} (expected circle|ellipse)"
+                ))
+            })?;
+        }
         if let Some(hue) = query.get("hue") {
             opts.hue = HueArc::parse(hue).ok_or_else(|| {
                 Error::invalid(format!(
@@ -904,10 +983,11 @@ impl GradientOptions {
     /// Radial radii per the precedence in the module docs.
     fn radial_radii(&self) -> (f64, f64) {
         let (cx, cy) = self.radial_center();
-        let (ex, ey) =
-            self.extent
-                .unwrap_or(GradientExtent::Circle)
-                .radii_at(self.width, self.height, cx, cy);
+        let extent = self.extent.unwrap_or(GradientExtent::Circle);
+        let (ex, ey) = match self.shape {
+            GradientShape::Ellipse => extent.ellipse_radii_at(self.width, self.height, cx, cy),
+            _ => extent.radii_at(self.width, self.height, cx, cy),
+        };
         match self.radii {
             Some((rx, Some(ry))) => (rx, ry),
             Some((rx, None)) => (rx, ey),
@@ -3216,5 +3296,67 @@ mod tests {
         let plain =
             GradientOptions::from_query(&map(&[("from", "red"), ("to", "#0000ff")])).unwrap();
         assert!(plain.stops.is_empty());
+    }
+
+    #[test]
+    fn ellipse_form_of_the_side_and_corner_extents() {
+        // 21 × 11 canvas, centre (6, 3): dl = 6, dr = 14, dt = 3, db = 7.
+        let radii = |e: GradientExtent| e.ellipse_radii_at(21, 11, 6.0, 3.0);
+        assert_eq!(radii(GradientExtent::ClosestSide), (6.0, 3.0));
+        assert_eq!(radii(GradientExtent::FarthestSide), (14.0, 7.0));
+        let r2 = std::f64::consts::SQRT_2;
+        assert_eq!(radii(GradientExtent::ClosestCorner), (6.0 * r2, 3.0 * r2));
+        assert_eq!(radii(GradientExtent::FarthestCorner), (14.0 * r2, 7.0 * r2));
+        // The other extents are unchanged.
+        assert_eq!(
+            radii(GradientExtent::Ellipse),
+            GradientExtent::Ellipse.radii_at(21, 11, 6.0, 3.0)
+        );
+        let field = |extent: GradientExtent| {
+            bw(21, 11)
+                .with_center(6.0, 3.0)
+                .with_extent(extent)
+                .with_shape(GradientShape::Ellipse)
+                .field(GradientKind::Radial)
+                .unwrap()
+        };
+        // closest-side: t = 1 exactly where the ellipse touches the
+        // left and top sides.
+        let f = field(GradientExtent::ClosestSide);
+        assert_eq!(f.parameter(6, 3), 0.0);
+        assert_eq!(f.parameter(0, 3), 1.0);
+        assert_eq!(f.parameter(6, 0), 1.0);
+        assert_eq!(f.parameter(12, 3), 1.0);
+        assert_eq!(f.parameter(3, 3), 0.5);
+        // farthest-side touches the right and bottom sides.
+        let f = field(GradientExtent::FarthestSide);
+        assert_eq!(f.parameter(20, 3), 1.0);
+        assert_eq!(f.parameter(6, 10), 1.0);
+        // The corner ellipses pass through their corner.
+        let f = field(GradientExtent::ClosestCorner);
+        assert!((f.parameter(0, 0) - 1.0).abs() < 1e-15);
+        let f = field(GradientExtent::FarthestCorner);
+        assert!((f.parameter(20, 10) - 1.0).abs() < 1e-15);
+        assert!(f.parameter(0, 0) < 1.0);
+        // The query spelling, and the circle default.
+        let q = map(&[
+            ("type", "radial"),
+            ("center", "6,3"),
+            ("extent", "closest-side"),
+            ("shape", "ellipse"),
+            ("w", "21"),
+            ("h", "11"),
+        ]);
+        let img = render(&q).unwrap();
+        assert_eq!(img.get(6, 3), [255, 255, 255, 255]);
+        assert_eq!(img.get(0, 3), [0, 0, 0, 255]);
+        assert_eq!(img.get(3, 3), [128, 128, 128, 255]);
+        assert_eq!(img.get(6, 0), [0, 0, 0, 255]);
+        let mut circle = q.clone();
+        circle.insert("shape".into(), "circle".into());
+        // Circle: radius 3 both ways, so (3, 3) is already black.
+        assert_eq!(render(&circle).unwrap().get(3, 3), [0, 0, 0, 255]);
+        circle.insert("shape".into(), "square".into());
+        assert!(render(&circle).is_err());
     }
 }

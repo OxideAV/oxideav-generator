@@ -385,6 +385,30 @@ fn radial_center_radii_and_vectors() {
 
 // ───────────────────────── plasma (statistical) ─────────────────────────
 
+#[test]
+fn radial_angle_rotates_the_ellipse() {
+    if !magick_available() {
+        return;
+    }
+    for angle in ["0", "30", "45", "90", "135", "200", "-60"] {
+        check_gradient(
+            true,
+            23,
+            17,
+            "white-black",
+            &[("radii", "9,4"), ("angle", angle)],
+        );
+        check_gradient(
+            true,
+            20,
+            20,
+            "red-blue",
+            &[("radii", "8,3"), ("center", "6,11"), ("angle", angle)],
+        );
+        check_gradient(true, 16, 24, "", &[("extent", "Ellipse"), ("angle", angle)]);
+    }
+}
+
 fn mean_sd(img: &Rgba8Image, ch: usize) -> (f64, f64) {
     let n = (img.width * img.height) as f64;
     let vals = img.pixels.as_chunks::<4>().0.iter().map(|p| p[ch] as f64);

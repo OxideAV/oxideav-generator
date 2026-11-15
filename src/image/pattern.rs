@@ -24,7 +24,7 @@
 //! | `gray0`…`gray100`| `M₈[y mod 8][x mod 8] < round(64·N/100)`: an ordered `N` % fill |
 //!
 //! `M₈` is the 8 × 8 dispersed-dot index matrix (see
-//! [`canvas`](super::canvas)), so `grayN` covers exactly
+//! [`canvas`]), so `grayN` covers exactly
 //! `round(64·N/100) / 64` of the pixels of every aligned 8 × 8 block.
 //!
 //! Historical spellings stay valid: `checker`,

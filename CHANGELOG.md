@@ -87,6 +87,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 - `tests/pinned_bytes.rs`: hashes of the 0.1.6 8-bit output of every
   still generator, so rendering refactors cannot change published
   pixels.
+- `shape=ellipse` (`GradientShape`, `GradientExtent::ellipse_radii_at`):
+  the ellipse form of the `closest-side` / `farthest-side` /
+  `closest-corner` / `farthest-corner` radial extents.
 - `benches/mpps.rs`: megapixels-per-second harness for the still-image
   generators.
 

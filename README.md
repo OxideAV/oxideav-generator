@@ -210,9 +210,12 @@ twelve formats:
 16-bit samples are `round(65535·v)`; 8-bit samples are that value
 rounded to 8 bits, which equals `round(255·v)` — the 8-bit image is
 the rounded float image. Gradients, solids, patterns, charts, random
-fields, ramp-coloured noise and displaced plasma are evaluated at full
-precision in every depth; generators defined on 8-bit levels (palette
-noise, fractals, `ramp`, `hald`, `label`) are widened exactly.
+fields and ramp-coloured noise are evaluated at full precision in
+every depth; two-colour and fractal plasma keep the fractional part of
+their displacement over an 8-bit base; generators defined on 8-bit
+levels (palette noise, fractals, `ramp`, `hald`, `label`) are widened
+exactly. Colours written as 16-bit hex (`#RRRRGGGGBBBB`) keep all 16
+bits.
 
 `dither=ordered` (8 × 8 dispersed-dot) or `dither=noise` (triangular,
 seeded by `dither_seed=`) spreads the rounding error of the integer
@@ -249,7 +252,8 @@ assert_eq!(image.as_u16().unwrap().len(), 1920 * 1080 * 3);
 - **Kinds**: `linear` (compass `direction`, `angle`, or explicit
   `vector`), `radial` (`center`, `radii`, `extent` = Circle / Ellipse /
   Diagonal / Maximum / Minimum / closest-side / farthest-side /
-  closest-corner / farthest-corner, `angle` rotating the ellipse),
+  closest-corner / farthest-corner — the last four as circles or, with
+  `shape=ellipse`, as ellipses — and `angle` rotating the ellipse),
   `conic` (`center`, start `angle`, clockwise from North).
 - **Stops**: two colours (`from` / `to`) or `stops=c1, c2 30%, c3`;
   missing offsets are spaced evenly, equal offsets make a hard edge.
