@@ -636,6 +636,7 @@ static DISPERSED_DOT_8: [[u8; 8]; 8] = dispersed_dot_8();
 /// Entry `M₈[y mod 8][x mod 8]` (0–63) of the 8 × 8 dispersed-dot
 /// index matrix.
 #[inline]
+#[doc(hidden)]
 pub fn dispersed_dot(x: u32, y: u32) -> u8 {
     DISPERSED_DOT_8[(y & 7) as usize][(x & 7) as usize]
 }
@@ -859,11 +860,24 @@ fn drive_rows<T: Sample>(field: &dyn Field, cfg: &RenderConfig, y0: u32, out: &m
 
 /// A single colour everywhere.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SolidField {
     pub width: u32,
     pub height: u32,
     /// Straight-alpha sRGB-encoded `[r, g, b, a]`, unit range.
     pub color: [f64; 4],
+}
+
+impl SolidField {
+    /// A `width × height` canvas of `color` (straight-alpha
+    /// sRGB-encoded `[r, g, b, a]`, unit range).
+    pub fn new(width: u32, height: u32, color: [f64; 4]) -> Self {
+        Self {
+            width: width.max(1),
+            height: height.max(1),
+            color,
+        }
+    }
 }
 
 impl Field for SolidField {
@@ -900,6 +914,7 @@ static U8_UNIT: [f64; 256] = {
 
 /// An 8-bit level as a unit-range value, `v / 255`.
 #[inline]
+#[doc(hidden)]
 pub fn u8_to_unit(v: u8) -> f64 {
     U8_UNIT[v as usize]
 }

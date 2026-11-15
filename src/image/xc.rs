@@ -13,11 +13,11 @@ use crate::source::{q_str, q_u32};
 
 /// The canvas as a [`SolidField`]: `w`, `h`, `color`.
 pub fn field(query: &BTreeMap<String, String>) -> Result<SolidField> {
-    Ok(SolidField {
-        width: q_u32(query, "w", 640)?.max(1),
-        height: q_u32(query, "h", 480)?.max(1),
-        color: parse_color_unit(q_str(query, "color", "black"))?,
-    })
+    Ok(SolidField::new(
+        q_u32(query, "w", 640)?,
+        q_u32(query, "h", 480)?,
+        parse_color_unit(q_str(query, "color", "black"))?,
+    ))
 }
 
 /// `generate://xc?…` as 8-bit RGBA.

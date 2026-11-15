@@ -1,6 +1,6 @@
 //! Linear, radial and conic gradients — two colours or a stop list —
-//! with the ImageMagick 7 pseudo-image option surface (`gradient:` / `radial-gradient:` and
-//! the `gradient:direction` / `angle` / `vector` / `extent` /
+//! with the `gradient:` / `radial-gradient:` pseudo-image option
+//! surface (the `gradient:direction` / `angle` / `vector` / `extent` /
 //! `bounding-box` / `center` / `radii` defines).
 //!
 //! # Geometry
@@ -332,8 +332,9 @@ pub enum GradientColorspace {
 }
 
 impl GradientColorspace {
-    /// `srgb` (default), `rgb` / `linear` (ImageMagick calls the
-    /// linear-light space `RGB`), `oklab`, `oklch`, `lab`, `lch`.
+    /// `srgb` (default), `rgb` / `linear` (the pseudo-image option
+    /// vocabulary spells the linear-light space `RGB`), `oklab`,
+    /// `oklch`, `lab`, `lch`.
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s.trim().to_ascii_lowercase().as_str() {
             "srgb" | "gamma" => Self::Srgb,
@@ -1485,7 +1486,9 @@ impl ColorRamp {
 /// is located to the exact `f64` with the reference function itself
 /// (a closed-form first guess, then a walk over neighbouring doubles),
 /// which makes a lookup return precisely what the reference function
-/// returns — without evaluating a power per sample.
+/// returns — without evaluating a power per sample. (This rests on the
+/// platform's power function being monotone across each step; the test
+/// suite checks every step position and the doubles either side.)
 struct EncodeTable {
     /// `thresholds[k]`: the least `v` whose code is at least `k`
     /// (`thresholds[0]` is unused; entries past 65535 are `+∞`
