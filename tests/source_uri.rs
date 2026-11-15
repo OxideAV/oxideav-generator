@@ -662,3 +662,69 @@ fn unknown_kind_returns_error() {
     let res = reg.open("generate://nonsensekind");
     assert!(res.is_err());
 }
+
+// ---------------------------- Depth / layout ----------------------------
+
+#[test]
+fn still_images_honour_depth_and_channels() {
+    use oxideav_core::PixelFormat;
+    let reg = registry();
+    for (keys, format, bytes_per_pixel) in [
+        ("", PixelFormat::Rgba, 4),
+        ("&channels=rgb", PixelFormat::Rgb24, 3),
+        ("&channels=gray", PixelFormat::Gray8, 1),
+        ("&channels=graya", PixelFormat::Ya8, 2),
+        ("&depth=16", PixelFormat::Rgba64Le, 8),
+        ("&depth=16&channels=rgb", PixelFormat::Rgb48Le, 6),
+        ("&depth=16&channels=gray", PixelFormat::Gray16Le, 2),
+        ("&depth=16&channels=graya", PixelFormat::Ya16Le, 4),
+    ] {
+        for kind in [
+            "gradient?from=black&to=white&direction=East",
+            "conic-gradient?stops=red,lime,blue",
+            "xc?color=gray",
+            "plasma?seed=3",
+            "pattern?size=1",
+        ] {
+            let uri = format!("generate://{kind}&w=5&h=3{keys}");
+            let mut src = open_frames(&reg, &uri);
+            assert_eq!(src.params().pixel_format, Some(format), "{uri}");
+            let frames = drain(&mut *src).unwrap();
+            let Frame::Video(v) = &frames[0] else {
+                panic!();
+            };
+            assert_eq!(v.planes[0].stride, 5 * bytes_per_pixel, "{uri}");
+            assert_eq!(v.planes[0].data.len(), 5 * 3 * bytes_per_pixel, "{uri}");
+        }
+    }
+    // 16-bit grey ramp, little-endian words: 0, 16384, 32768, 49151, 65535.
+    let mut src = open_frames(
+        &reg,
+        "generate://gradient?from=black&to=white&direction=East&w=5&h=1&depth=16&channels=gray",
+    );
+    let frames = drain(&mut *src).unwrap();
+    let Frame::Video(v) = &frames[0] else {
+        panic!();
+    };
+    let words: Vec<u16> = v.planes[0]
+        .data
+        .chunks(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    assert_eq!(words, vec![0, 16384, 32768, 49151, 65535]);
+}
+
+#[test]
+fn float_depth_is_refused_on_the_frame_path() {
+    let reg = registry();
+    let err = match reg.open("generate://gradient?depth=float&w=4&h=4") {
+        Ok(_) => panic!("float frames have no pixel format"),
+        Err(e) => format!("{e}"),
+    };
+    assert!(err.contains("float"), "{err}");
+    assert!(reg.open("generate://gradient?depth=12&w=4&h=4").is_err());
+    assert!(
+        reg.open("generate://gradient?channels=cmyk&w=4&h=4")
+            .is_err()
+    );
+}

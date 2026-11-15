@@ -22,11 +22,8 @@ use oxideav_core::{
 };
 
 use crate::audio::synth as audio_synth;
-#[cfg(feature = "label")]
-use crate::image::label;
-use crate::image::{
-    Rgba8Image, fractal, gradient, grating, hald, noise, pattern, plasma, ramp, xc,
-};
+use crate::image::Rgba8Image;
+use crate::image::canvas::Image;
 use crate::video::{
     FrameSeq, colorwheel, fractal_zoom, gradient_animate, movingbox, scroll, smptebars, snow,
     testsrc, zoneplate,
@@ -41,58 +38,17 @@ pub fn register_source(registry: &mut SourceRegistry) {
 /// matching generator, and returns a boxed [`FrameSource`].
 pub fn open_generate_frames(uri: &str) -> Result<Box<dyn FrameSource>> {
     let parsed = ParsedUri::parse(uri)?;
+    // Still images — one static frame, in the depth / layout the query
+    // asks for.
+    if let Some(img) = crate::image::render_still(&parsed.kind, &parsed.query) {
+        return Ok(Box::new(SingleImageFrameSource::new(img?)?));
+    }
     match parsed.kind.as_str() {
         // Audio
         "synth" => {
             let buf = audio_synth::render(&parsed.query)?;
             Ok(Box::new(AudioFrameSource::new(buf)))
         }
-
-        // Image basics — one static frame.
-        "xc" => Ok(Box::new(SingleImageFrameSource::new(xc::render(
-            &parsed.query,
-        )?))),
-        "gradient" => Ok(Box::new(SingleImageFrameSource::new(gradient::render(
-            &parsed.query,
-        )?))),
-        // ImageMagick's `radial-gradient:` pseudo-image is the radial
-        // flavour of `gradient`; `type=radial` is forced.
-        "radial-gradient" | "radial_gradient" | "radial" => {
-            let mut q = parsed.query.clone();
-            q.insert("type".to_string(), "radial".to_string());
-            Ok(Box::new(SingleImageFrameSource::new(gradient::render(&q)?)))
-        }
-        "pattern" => Ok(Box::new(SingleImageFrameSource::new(pattern::render(
-            &parsed.query,
-        )?))),
-        "grating" => Ok(Box::new(SingleImageFrameSource::new(grating::render(
-            &parsed.query,
-        )?))),
-        "ramp" => Ok(Box::new(SingleImageFrameSource::new(ramp::render(
-            &parsed.query,
-        )?))),
-        "hald" => Ok(Box::new(SingleImageFrameSource::new(hald::render(
-            &parsed.query,
-        )?))),
-        #[cfg(feature = "label")]
-        "label" => Ok(Box::new(SingleImageFrameSource::new(label::render(
-            &parsed.query,
-        )?))),
-        #[cfg(not(feature = "label"))]
-        "label" => Err(Error::Unsupported(
-            "generate://label: oxideav-generator was built without the `label` feature".into(),
-        )),
-
-        // Procedural images — one static frame.
-        "fractal" => Ok(Box::new(SingleImageFrameSource::new(fractal::render(
-            &parsed.query,
-        )?))),
-        "plasma" => Ok(Box::new(SingleImageFrameSource::new(plasma::render(
-            &parsed.query,
-        )?))),
-        "noise" => Ok(Box::new(SingleImageFrameSource::new(noise::render(
-            &parsed.query,
-        )?))),
 
         // Video — full frame sequences. Y4M is no longer in the loop;
         // frames flow straight into the pipeline as Frames-shape source
@@ -213,17 +169,26 @@ struct SingleImageFrameSource {
 }
 
 impl SingleImageFrameSource {
-    fn new(img: Rgba8Image) -> Self {
+    fn new(img: Image) -> Result<Self> {
         let mut params = CodecParameters::video(CodecId::new("rawvideo"));
         params.width = Some(img.width);
         params.height = Some(img.height);
-        params.pixel_format = Some(PixelFormat::Rgba);
+        params.pixel_format = Some(crate::image::frame_format(&img)?);
         params.frame_rate = Some(Rational::new(1, 1));
-        let frame = rgba_image_to_video_frame(img, 0);
-        Self {
+        let frame = VideoFrame {
+            pts: Some(0),
+            planes: vec![VideoPlane {
+                stride: img.stride(),
+                data: match img.samples {
+                    crate::image::canvas::Samples::U8(v) => v,
+                    _ => img.to_le_bytes(),
+                },
+            }],
+        };
+        Ok(Self {
             params,
             pending: Some(frame),
-        }
+        })
     }
 }
 

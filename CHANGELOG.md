@@ -6,6 +6,31 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Added
+
+- `image::canvas`: every still-image generator can be delivered as
+  8-bit, 16-bit or float samples in grey, grey + alpha, RGB or RGBA
+  (`RenderConfig`, `Image`, `Field`, `render`, `render_band`). 8-bit
+  output is the 16-bit output rounded, which is the rounded float
+  output. Optional ordered (8 × 8 dispersed-dot) or triangular-noise
+  dithering removes banding at integer depths; a caller-granted thread
+  budget splits the rows into bands with byte-identical output.
+- `generate://` still images and the `image.*` filters take
+  `depth=8|16|float`, `channels=gray|graya|rgb|rgba`,
+  `dither=none|ordered|noise` and `threads=N`; frames carry the
+  matching pixel format (`Gray8` … `Rgba64Le`). Float is available on
+  the direct API only (`image::render_still`), because the framework
+  has no float pixel format.
+- Gradients: multi-stop ramps (`stops=red, white 30%, blue`,
+  `GradientStop`), spread methods `pad` / `repeat` / `reflect`, conic
+  gradients (`type=conic`, `generate://conic-gradient`, `render_conic`)
+  with a platform-independent angle function, `angle=` rotating a
+  radial ellipse, and interpolation in Oklab, OkLCh, CIELAB and
+  LCh(ab) with selectable hue arc (`colorspace=`, `hue=`), on top of
+  the existing sRGB and linear-light spaces.
+- `benches/mpps.rs`: megapixels-per-second harness for the still-image
+  generators.
+
 ## [0.1.6](https://github.com/OxideAV/oxideav-generator/compare/v0.1.5...v0.1.6) - 2026-11-07
 
 ### Other

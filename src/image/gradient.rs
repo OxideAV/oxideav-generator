@@ -1,5 +1,5 @@
-//! Linear and radial two-stop gradients with the ImageMagick 7
-//! pseudo-image option surface (`gradient:` / `radial-gradient:` and
+//! Linear, radial and conic gradients — two colours or a stop list —
+//! with the ImageMagick 7 pseudo-image option surface (`gradient:` / `radial-gradient:` and
 //! the `gradient:direction` / `angle` / `vector` / `extent` /
 //! `bounding-box` / `center` / `radii` defines).
 //!
@@ -76,6 +76,51 @@
 //! `round(q / 257)` to 8 bits, so values match the `magick` binary's
 //! `-depth 8` output exactly.
 //!
+//! # Stops, spread, conic, colour spaces
+//!
+//! **Stops** — instead of two colours a gradient can carry a list of
+//! [`GradientStop`]s (`stops=red, white 30%, blue`). Offsets are
+//! fractions of the ramp; a missing first / last offset is 0 / 1, an
+//! offset smaller than an earlier one is raised to it, and runs of
+//! missing offsets are spaced evenly. Between two stops the colour is
+//! the linear interpolation of the premultiplied components at
+//! `u = (t − o₀) / (o₁ − o₀)`; two stops at the same offset make a hard
+//! edge (the later one applies from the edge on).
+//!
+//! **Spread** ([`GradientSpread`]) decides what happens outside
+//! `t ∈ [0, 1]`: `Pad` clamps, `Repeat` uses `t − ⌊t⌋`, `Reflect` the
+//! triangle wave `m = t mod 2`, `t′ = m` for `m ≤ 1` else `2 − m`.
+//!
+//! **Conic** — `t` is the angle of the pixel around the centre
+//! (`center`, default the canvas centre), clockwise from North, as a
+//! fraction of a turn, minus the start angle `angle / 360`, wrapped to
+//! `[0, 1)`. The centre pixel itself is `t = 0`. The angle comes from
+//! [`turn_fraction`], which uses only `+ − × ÷ √` and is therefore
+//! bit-identical on every platform and exact on the eight principal
+//! directions.
+//!
+//! **Radial angle** — `angle = θ` rotates the ellipse clockwise: the
+//! centre offset `(dx, dy)` is taken in the rotated frame
+//! `u = dx·cos θ + dy·sin θ`, `v = dy·cos θ − dx·sin θ` before the
+//! radii are applied.
+//!
+//! **Colour spaces** ([`GradientColorspace`]) — besides `Srgb` and
+//! `Linear`, stops can be interpolated in Oklab, CIELAB (D50) or their
+//! polar forms. In a polar space the hue travels along the [`HueArc`]
+//! (shorter by default), a stop without chroma takes its neighbour's
+//! hue, and lightness and chroma — not hue — are premultiplied. The
+//! result is clamped to the sRGB gamut in linear light before
+//! encoding, and a parameter that falls exactly on a stop returns the
+//! stop's colour itself.
+//!
+//! # Depth and layout
+//!
+//! [`GradientOptions::field`] yields a [`GradientField`], a
+//! [`Field`] that [`canvas::render`] delivers as
+//! 8-bit, 16-bit or float samples in grey, grey + alpha, RGB or RGBA,
+//! optionally dithered and row-banded over a thread budget. The
+//! `render*` functions here are the 8-bit RGBA shorthands.
+//!
 //! # Parity note
 //!
 //! ImageMagick 7.1.2 writes the pixel at the gradient vector's start
@@ -90,7 +135,13 @@ use std::collections::BTreeMap;
 
 use oxideav_core::{Error, Result};
 
+use oxideav_pixfmt::colorspace::{
+    ColorModel, D50, D65, LabWhite, RgbPrimaries, bradford_adaptation, lab_to_xyz, lch_to_lab,
+    oklab_to_xyz_d65,
+};
+
 use super::Rgba8Image;
+use super::canvas::{self, Field, Image, RenderConfig};
 use super::palette::parse_color;
 use crate::source::{q_f64, q_str, q_u32};
 
@@ -258,7 +309,7 @@ impl GradientExtent {
     }
 }
 
-/// Colour space the two stops are interpolated in.
+/// Colour space the stops are interpolated in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum GradientColorspace {
@@ -269,17 +320,244 @@ pub enum GradientColorspace {
     /// Decode through the sRGB transfer function, interpolate in linear
     /// light, re-encode.
     Linear,
+    /// Oklab: perceptually even lightness, no hue sweep.
+    Oklab,
+    /// Oklab in polar form (lightness, chroma, hue): keeps chroma up
+    /// between saturated stops; the hue path is set by [`HueArc`].
+    Oklch,
+    /// CIELAB (D50 white).
+    Lab,
+    /// CIELAB in polar form, CIE LCh(ab) (D50 white).
+    Lch,
 }
 
 impl GradientColorspace {
-    /// `srgb` (default) or `rgb` / `linear` (ImageMagick calls the
-    /// linear-light space `RGB`).
+    /// `srgb` (default), `rgb` / `linear` (ImageMagick calls the
+    /// linear-light space `RGB`), `oklab`, `oklch`, `lab`, `lch`.
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s.trim().to_ascii_lowercase().as_str() {
             "srgb" | "gamma" => Self::Srgb,
-            "rgb" | "linear" | "linear-rgb" | "linearrgb" | "linear_rgb" => Self::Linear,
+            "rgb" | "linear" | "linear-rgb" | "linearrgb" | "linear_rgb" | "srgb-linear" => {
+                Self::Linear
+            }
+            "oklab" => Self::Oklab,
+            "oklch" => Self::Oklch,
+            "lab" | "cielab" => Self::Lab,
+            "lch" | "lchab" | "cielch" => Self::Lch,
             _ => return None,
         })
+    }
+
+    /// The third component is a hue angle.
+    fn is_polar(self) -> bool {
+        matches!(self, Self::Oklch | Self::Lch)
+    }
+}
+
+/// Shape of the gradient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum GradientKind {
+    /// Colour varies along a line.
+    #[default]
+    Linear,
+    /// Colour varies with the (elliptical) distance from a centre.
+    Radial,
+    /// Colour varies with the angle around a centre.
+    Conic,
+}
+
+impl GradientKind {
+    /// `linear`, `radial` (also `radial-gradient`), `conic` (also
+    /// `conical`, `angular`, `sweep`).
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "linear" | "gradient" => Self::Linear,
+            "radial" | "radial-gradient" | "radial_gradient" => Self::Radial,
+            "conic" | "conical" | "angular" | "sweep" | "conic-gradient" | "conic_gradient" => {
+                Self::Conic
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// What the ramp does outside `t ∈ [0, 1]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum GradientSpread {
+    /// Hold the end colours (`t` clamped).
+    #[default]
+    Pad,
+    /// Start over: `t − ⌊t⌋` (a `t` already inside `[0, 1]` is kept,
+    /// so `t = 1` still shows the last colour).
+    Repeat,
+    /// Run back and forth: the triangle wave of period 2.
+    Reflect,
+}
+
+impl GradientSpread {
+    /// `pad` / `clamp`, `repeat`, `reflect` / `mirror`.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "pad" | "clamp" | "none" => Self::Pad,
+            "repeat" | "tile" => Self::Repeat,
+            "reflect" | "mirror" => Self::Reflect,
+            _ => return None,
+        })
+    }
+}
+
+/// Which way round the hue circle a polar space ([`GradientColorspace::Oklch`],
+/// [`GradientColorspace::Lch`]) travels between two stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum HueArc {
+    /// The arc of at most 180°.
+    #[default]
+    Shorter,
+    /// The arc of at least 180°.
+    Longer,
+    /// Always towards larger angles.
+    Increasing,
+    /// Always towards smaller angles.
+    Decreasing,
+}
+
+impl HueArc {
+    /// `shorter`, `longer`, `increasing`, `decreasing`.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "shorter" | "short" => Self::Shorter,
+            "longer" | "long" => Self::Longer,
+            "increasing" => Self::Increasing,
+            "decreasing" => Self::Decreasing,
+            _ => return None,
+        })
+    }
+
+    /// The end hue (degrees, possibly outside `[0, 360)`) to
+    /// interpolate towards linearly from `h0` so the path follows this
+    /// arc to `h1`.
+    fn resolve(self, h0: f64, h1: f64) -> f64 {
+        // Difference folded into [0, 360).
+        let up = (h1 - h0).rem_euclid(360.0);
+        let d = match self {
+            Self::Shorter => {
+                if up > 180.0 {
+                    up - 360.0
+                } else {
+                    up
+                }
+            }
+            Self::Longer => {
+                if up > 0.0 && up < 180.0 {
+                    up - 360.0
+                } else if up == 0.0 {
+                    360.0
+                } else {
+                    up
+                }
+            }
+            Self::Increasing => up,
+            Self::Decreasing => {
+                if up == 0.0 {
+                    0.0
+                } else {
+                    up - 360.0
+                }
+            }
+        };
+        h0 + d
+    }
+}
+
+/// One colour stop of a multi-stop gradient.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct GradientStop {
+    /// Position along the ramp (`0` = start, `1` = end); `None` lets
+    /// [`GradientOptions::resolved_stops`] place it.
+    pub offset: Option<f64>,
+    /// Straight-alpha sRGB-encoded `[r, g, b, a]`, each in `[0, 1]`.
+    pub color: [f64; 4],
+}
+
+impl GradientStop {
+    /// A stop of the given colour with an automatic position.
+    pub fn new(color: [f64; 4]) -> Self {
+        Self {
+            offset: None,
+            color,
+        }
+    }
+
+    /// A stop from an 8-bit RGBA colour.
+    pub fn from_rgba8(color: [u8; 4]) -> Self {
+        Self::new(color.map(|v| f64::from(v) / 255.0))
+    }
+
+    /// Fix the position.
+    pub fn with_offset(mut self, offset: f64) -> Self {
+        self.offset = Some(offset);
+        self
+    }
+
+    /// Parse `colour`, `colour 25%`, `colour 0.25` or `colour@0.25`.
+    pub fn parse(s: &str) -> Result<Self> {
+        let s = s.trim();
+        let number = |tok: &str| -> Option<f64> {
+            match tok.strip_suffix('%') {
+                Some(p) => p.trim().parse::<f64>().ok().map(|v| v / 100.0),
+                None => tok.parse::<f64>().ok(),
+            }
+        };
+        // The offset is the text after the last `@` or space that sits
+        // outside any parentheses.
+        let mut depth = 0i32;
+        let mut split = None;
+        for (i, b) in s.bytes().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                b'@' | b' ' if depth <= 0 => split = Some(i),
+                _ => {}
+            }
+        }
+        if let Some(i) = split
+            && let Some(offset) = number(s[i + 1..].trim())
+        {
+            return Ok(Self::from_rgba8(parse_color(&s[..i])?).with_offset(offset));
+        }
+        Ok(Self::from_rgba8(parse_color(s)?))
+    }
+
+    /// Parse a `,` or `;` separated stop list (separators inside
+    /// parentheses belong to the colour).
+    pub fn parse_list(s: &str) -> Result<Vec<Self>> {
+        let mut out = Vec::new();
+        let mut depth = 0i32;
+        let mut start = 0;
+        for (i, b) in s.bytes().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                b',' | b';' if depth <= 0 => {
+                    if !s[start..i].trim().is_empty() {
+                        out.push(Self::parse(&s[start..i])?);
+                    }
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        if !s[start..].trim().is_empty() {
+            out.push(Self::parse(&s[start..])?);
+        }
+        if out.is_empty() {
+            return Err(Error::invalid("gradient: empty stop list"));
+        }
+        Ok(out)
     }
 }
 
@@ -374,6 +652,12 @@ pub struct GradientOptions {
     /// vertical radius.
     pub radii: Option<(f64, Option<f64>)>,
     pub colorspace: GradientColorspace,
+    /// Explicit colour stops; when non-empty they replace `from` /
+    /// `to`.
+    pub stops: Vec<GradientStop>,
+    pub spread: GradientSpread,
+    /// Hue path in the polar colour spaces.
+    pub hue: HueArc,
 }
 
 impl GradientOptions {
@@ -392,7 +676,27 @@ impl GradientOptions {
             center: None,
             radii: None,
             colorspace: GradientColorspace::Srgb,
+            stops: Vec::new(),
+            spread: GradientSpread::Pad,
+            hue: HueArc::Shorter,
         }
+    }
+
+    /// Replace `from` / `to` by an explicit stop list (two or more
+    /// colours, optionally positioned).
+    pub fn with_stops(mut self, stops: Vec<GradientStop>) -> Self {
+        self.stops = stops;
+        self
+    }
+
+    pub fn with_spread(mut self, spread: GradientSpread) -> Self {
+        self.spread = spread;
+        self
+    }
+
+    pub fn with_hue_arc(mut self, hue: HueArc) -> Self {
+        self.hue = hue;
+        self
     }
 
     pub fn with_colors(mut self, from: [u8; 4], to: [u8; 4]) -> Self {
@@ -510,7 +814,24 @@ impl GradientOptions {
         if let Some(cs) = query.get("colorspace") {
             opts.colorspace = GradientColorspace::parse(cs).ok_or_else(|| {
                 Error::invalid(format!(
-                    "gradient: unknown colorspace {cs:?} (expected srgb|rgb|linear)"
+                    "gradient: unknown colorspace {cs:?} (expected srgb|rgb|linear|oklab|oklch|lab|lch)"
+                ))
+            })?;
+        }
+        if let Some(list) = query.get("stops") {
+            opts.stops = GradientStop::parse_list(list)?;
+        }
+        if let Some(sp) = query.get("spread") {
+            opts.spread = GradientSpread::parse(sp).ok_or_else(|| {
+                Error::invalid(format!(
+                    "gradient: unknown spread {sp:?} (expected pad|repeat|reflect)"
+                ))
+            })?;
+        }
+        if let Some(hue) = query.get("hue") {
+            opts.hue = HueArc::parse(hue).ok_or_else(|| {
+                Error::invalid(format!(
+                    "gradient: unknown hue arc {hue:?} (expected shorter|longer|increasing|decreasing)"
                 ))
             })?;
         }
@@ -602,217 +923,695 @@ fn parse_f64_list(s: &str, what: &str) -> Result<Vec<f64>> {
         .collect()
 }
 
-/// `generate://gradient?…` entry point: `type=linear` (default) or
-/// `type=radial`, every other key per [`GradientOptions::from_query`].
+/// `generate://gradient?…` entry point: `type=linear` (default),
+/// `type=radial` or `type=conic`, every other key per
+/// [`GradientOptions::from_query`]. 8-bit RGBA; see [`render_image`]
+/// for the other depths and layouts.
 pub fn render(query: &BTreeMap<String, String>) -> Result<Rgba8Image> {
     let opts = GradientOptions::from_query(query)?;
-    match q_str(query, "type", "linear") {
-        "linear" => render_linear(&opts),
-        "radial" | "radial-gradient" | "radial_gradient" => render_radial(&opts),
-        other => Err(Error::invalid(format!(
-            "gradient: unknown type {other:?} (expected linear|radial)"
-        ))),
-    }
+    let kind = kind_from_query(query)?;
+    Ok(canvas::render(&opts.field(kind)?, &RenderConfig::new()).into_rgba8())
 }
 
-/// Render a linear two-stop gradient.
+/// Like [`render`], with the output shaped by the query's `depth=`,
+/// `channels=`, `dither=` and `threads=` keys
+/// ([`RenderConfig::from_query`]).
+pub fn render_image(query: &BTreeMap<String, String>) -> Result<Image> {
+    let opts = GradientOptions::from_query(query)?;
+    let kind = kind_from_query(query)?;
+    let cfg = RenderConfig::from_query(query)?;
+    Ok(canvas::render(&opts.field(kind)?, &cfg))
+}
+
+fn kind_from_query(query: &BTreeMap<String, String>) -> Result<GradientKind> {
+    let t = q_str(query, "type", "linear");
+    GradientKind::parse(t).ok_or_else(|| {
+        Error::invalid(format!(
+            "gradient: unknown type {t:?} (expected linear|radial|conic)"
+        ))
+    })
+}
+
+/// Render a linear gradient as 8-bit RGBA.
 pub fn render_linear(opts: &GradientOptions) -> Result<Rgba8Image> {
-    let bbox = opts.checked_bbox()?;
-    let mixer = Mixer::new(opts);
-    let w = opts.width;
-    let h = opts.height;
-    let mut img = Rgba8Image::new(w, h);
-
-    enum Mode {
-        Vector {
-            x1: f64,
-            y1: f64,
-            dx: f64,
-            dy: f64,
-            len2: f64,
-        },
-        Angle {
-            dx: f64,
-            dy: f64,
-            min: f64,
-            range: f64,
-        },
-    }
-    let mode = match opts.linear_vector() {
-        Some([x1, y1, x2, y2]) => {
-            let dx = x2 - x1;
-            let dy = y2 - y1;
-            let len2 = dx * dx + dy * dy;
-            Mode::Vector {
-                x1,
-                y1,
-                dx,
-                dy,
-                len2,
-            }
-        }
-        None => {
-            let theta = opts.angle.unwrap_or(0.0).to_radians();
-            // Quantise the direction to a 1e-12 grid. This snaps
-            // floating-point dust (cos 90° ≈ 6e-17) to zero, so a cardinal
-            // angle on a one-pixel axis stays degenerate (one colour), and
-            // it makes the result independent of the platform libm: sin /
-            // cos may differ by an ulp between targets, which would flip
-            // exact-half cases such as t = 5/6 at 45° on 5x3.
-            let snap = |v: f64| (v * 1e12).round() / 1e12;
-            let dx = snap(theta.sin());
-            let dy = snap(-theta.cos());
-            let r = (w - 1) as f64;
-            let b = (h - 1) as f64;
-            let corners = [0.0, r * dx, b * dy, r * dx + b * dy];
-            let min = corners.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max = corners.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let range = max - min;
-            Mode::Angle { dx, dy, min, range }
-        }
-    };
-
-    for y in 0..h {
-        for x in 0..w {
-            if let Some(b) = bbox
-                && !b.contains(x, y)
-            {
-                img.put(x, y, mixer.outside);
-                continue;
-            }
-            let px = x as f64;
-            let py = y as f64;
-            // Plain division (not a cached reciprocal) keeps the
-            // exact-half cases on the same side magick lands them.
-            let t = match mode {
-                Mode::Vector {
-                    x1,
-                    y1,
-                    dx,
-                    dy,
-                    len2,
-                } => {
-                    if len2 > 0.0 {
-                        ((px - x1) * dx + (py - y1) * dy) / len2
-                    } else {
-                        0.0
-                    }
-                }
-                Mode::Angle { dx, dy, min, range } => {
-                    if range > 0.0 {
-                        (px * dx + py * dy - min) / range
-                    } else {
-                        0.0
-                    }
-                }
-            };
-            img.put(x, y, mixer.at(t));
-        }
-    }
-    Ok(img)
+    Ok(canvas::render(&opts.field(GradientKind::Linear)?, &RenderConfig::new()).into_rgba8())
 }
 
-/// Render a radial two-stop gradient.
+/// Render a radial gradient as 8-bit RGBA.
 pub fn render_radial(opts: &GradientOptions) -> Result<Rgba8Image> {
-    let bbox = opts.checked_bbox()?;
-    let mixer = Mixer::new(opts);
-    let w = opts.width;
-    let h = opts.height;
-    let (cx, cy) = opts.radial_center();
-    let (rx, ry) = opts.radial_radii();
-    let mut img = Rgba8Image::new(w, h);
+    Ok(canvas::render(&opts.field(GradientKind::Radial)?, &RenderConfig::new()).into_rgba8())
+}
 
-    // `d / r` with the zero-radius step rule.
-    let norm = |d: f64, r: f64| -> f64 {
-        if r > 0.0 {
-            d / r
-        } else if d == 0.0 {
+/// Render a conic gradient as 8-bit RGBA.
+pub fn render_conic(opts: &GradientOptions) -> Result<Rgba8Image> {
+    Ok(canvas::render(&opts.field(GradientKind::Conic)?, &RenderConfig::new()).into_rgba8())
+}
+
+/// Where the gradient parameter `t` comes from.
+#[derive(Clone, Copy, Debug)]
+enum Geometry {
+    /// `t = ((p − p1) · d) / |d|²`.
+    Vector {
+        x1: f64,
+        y1: f64,
+        dx: f64,
+        dy: f64,
+        len2: f64,
+    },
+    /// `t = (p · d − min) / range`.
+    Angle {
+        dx: f64,
+        dy: f64,
+        min: f64,
+        range: f64,
+    },
+    /// `t = √((u/rx)² + (v/ry)²)`, `(u, v)` the centre offset, rotated
+    /// by `(cos, sin)` when `rotated`.
+    Radial {
+        cx: f64,
+        cy: f64,
+        rx: f64,
+        ry: f64,
+        cos: f64,
+        sin: f64,
+        rotated: bool,
+    },
+    /// `t = frac(turn(p − c) − start)`.
+    Conic { cx: f64, cy: f64, start: f64 },
+}
+
+/// `d / r` with the zero-radius step rule.
+#[inline]
+fn radial_norm(d: f64, r: f64) -> f64 {
+    if r > 0.0 {
+        d / r
+    } else if d == 0.0 {
+        0.0
+    } else {
+        f64::INFINITY
+    }
+}
+
+impl Geometry {
+    /// The part of `t` that only depends on the row, hoisted out of the
+    /// pixel loop. The per-pixel expression is unchanged by the
+    /// hoisting (same operations, same order).
+    #[inline]
+    fn row_term(&self, y: u32) -> f64 {
+        let py = f64::from(y);
+        match *self {
+            Geometry::Vector { y1, dy, .. } => (py - y1) * dy,
+            Geometry::Angle { dy, .. } => py * dy,
+            Geometry::Radial { cy, .. } | Geometry::Conic { cy, .. } => py - cy,
+        }
+    }
+
+    /// Gradient parameter of pixel `x` on a row whose
+    /// [`Geometry::row_term`] is `row`.
+    #[inline]
+    fn t(&self, x: u32, row: f64) -> f64 {
+        let px = f64::from(x);
+        match *self {
+            // Plain division (not a cached reciprocal) keeps exact-half
+            // cases on the documented side.
+            Geometry::Vector { x1, dx, len2, .. } => {
+                if len2 > 0.0 {
+                    ((px - x1) * dx + row) / len2
+                } else {
+                    0.0
+                }
+            }
+            Geometry::Angle { dx, min, range, .. } => {
+                if range > 0.0 {
+                    (px * dx + row - min) / range
+                } else {
+                    0.0
+                }
+            }
+            Geometry::Radial {
+                cx,
+                rx,
+                ry,
+                cos,
+                sin,
+                rotated,
+                ..
+            } => {
+                let (u, v) = if rotated {
+                    let ox = px - cx;
+                    (ox * cos + row * sin, row * cos - ox * sin)
+                } else {
+                    (px - cx, row)
+                };
+                let nx = radial_norm(u, rx);
+                let ny = radial_norm(v, ry);
+                (nx * nx + ny * ny).sqrt()
+            }
+            Geometry::Conic { cx, start, .. } => {
+                // Clockwise from North: North is −y, East is +x.
+                let t = turn_fraction(-row, px - cx) - start;
+                t - t.floor()
+            }
+        }
+    }
+}
+
+/// Angle of the vector `(x, y)` as a fraction of a full turn in
+/// `[0, 1)`, measured from `+x` towards `+y`; `0` for the zero vector.
+///
+/// Built from `+ − × ÷ √` only, so the result is the same on every
+/// platform (no dependence on the C library's `atan2`). The eight
+/// principal directions are exact multiples of `1/8`. Elsewhere the
+/// octant-reduced ratio `z ∈ (0, 1)` goes through two half-angle steps
+/// `z ← z / (1 + √(1 + z²))` (so `atan z = 4·atan z″` with
+/// `z″ < tan(π/16) ≈ 0.199`) and the odd Maclaurin series to `z″²¹`,
+/// whose truncation error is below `10⁻¹⁷`.
+#[doc(hidden)]
+pub fn turn_fraction(x: f64, y: f64) -> f64 {
+    let ax = x.abs();
+    let ay = y.abs();
+    if ax == 0.0 && ay == 0.0 {
+        return 0.0;
+    }
+    let (lo, hi) = if ay <= ax { (ay, ax) } else { (ax, ay) };
+    let octant = if lo == hi {
+        0.125
+    } else if lo == 0.0 {
+        0.0
+    } else {
+        let half = |z: f64| z / (1.0 + (1.0 + z * z).sqrt());
+        let z = half(half(lo / hi));
+        let z2 = z * z;
+        // Horner form of z − z³/3 + z⁵/5 − … + z²¹/21.
+        let mut s = 1.0 / 21.0;
+        let mut k = 19.0;
+        while k >= 1.0 {
+            s = 1.0 / k - z2 * s;
+            k -= 2.0;
+        }
+        // atan(lo/hi) = 4·z·s radians; one turn is 2π.
+        (4.0 * z * s) / std::f64::consts::TAU
+    };
+    let quadrant = if ay <= ax { octant } else { 0.25 - octant };
+    match (x < 0.0, y < 0.0) {
+        (false, false) => quadrant,
+        (true, false) => 0.5 - quadrant,
+        (true, true) => 0.5 + quadrant,
+        (false, true) => {
+            if quadrant == 0.0 {
+                0.0
+            } else {
+                1.0 - quadrant
+            }
+        }
+    }
+}
+
+/// One piece of the colour ramp between two consecutive stops.
+#[derive(Clone, Copy, Debug)]
+struct Segment {
+    o0: f64,
+    o1: f64,
+    /// Interpolation-space components, premultiplied by alpha (hue
+    /// excepted), `[c0, c1, c2, alpha]`.
+    c0: [f64; 4],
+    c1: [f64; 4],
+    /// The stops' own straight encoded colours, returned verbatim at
+    /// the segment ends in the perceptual spaces.
+    s0: [f64; 4],
+    s1: [f64; 4],
+}
+
+type Mat3 = [[f64; 3]; 3];
+
+fn mat3_mul(a: &Mat3, b: &Mat3) -> Mat3 {
+    let mut m = [[0.0; 3]; 3];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    m
+}
+
+/// Inverse by the adjugate (the matrices here are well conditioned).
+fn mat3_inverse(m: &Mat3) -> Mat3 {
+    let c = |i: usize, j: usize| {
+        let (i1, i2) = ((i + 1) % 3, (i + 2) % 3);
+        let (j1, j2) = ((j + 1) % 3, (j + 2) % 3);
+        m[i1][j1] * m[i2][j2] - m[i1][j2] * m[i2][j1]
+    };
+    let det = m[0][0] * c(0, 0) + m[0][1] * c(0, 1) + m[0][2] * c(0, 2);
+    let mut inv = [[0.0; 3]; 3];
+    for (i, row) in inv.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = c(j, i) / det;
+        }
+    }
+    inv
+}
+
+#[inline]
+fn mat3_apply(m: &Mat3, v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+/// The colour ramp: stops resolved into segments in the interpolation
+/// space, plus what is needed to come back to encoded sRGB.
+#[derive(Clone, Debug)]
+struct ColorRamp {
+    space: GradientColorspace,
+    spread: GradientSpread,
+    segments: Vec<Segment>,
+    /// XYZ → linear sRGB (from D65 XYZ for Oklab, from D50 XYZ for
+    /// CIELAB, the chromatic adaptation folded in).
+    xyz_to_linear: Mat3,
+    /// D50 white, for CIELAB.
+    white: [f64; 3],
+    /// Colour painted outside the bounding box.
+    outside: [f64; 4],
+}
+
+impl ColorRamp {
+    fn new(opts: &GradientOptions) -> Result<Self> {
+        let space = opts.colorspace;
+        let stops = opts.resolved_stops()?;
+        let model = match space {
+            GradientColorspace::Srgb => ColorModel::Srgb,
+            GradientColorspace::Linear => ColorModel::LinearSrgb,
+            GradientColorspace::Oklab => ColorModel::Oklab,
+            GradientColorspace::Oklch => ColorModel::Oklch,
+            GradientColorspace::Lab => ColorModel::Lab(LabWhite::D50),
+            GradientColorspace::Lch => ColorModel::Lch(LabWhite::D50),
+        };
+        let polar = space.is_polar();
+        // Straight components in the interpolation space. Srgb and
+        // Linear keep their historical arithmetic exactly.
+        let convert = |c: [f64; 4]| -> [f64; 3] {
+            match space {
+                GradientColorspace::Srgb => [c[0], c[1], c[2]],
+                GradientColorspace::Linear => [
+                    srgb_to_linear(c[0]),
+                    srgb_to_linear(c[1]),
+                    srgb_to_linear(c[2]),
+                ],
+                _ => model.from_srgb([c[0], c[1], c[2]]),
+            }
+        };
+        let mut comps: Vec<[f64; 3]> = stops.iter().map(|s| convert(s.1)).collect();
+        if polar {
+            // A colour with no chroma has no hue of its own: it takes
+            // its neighbour's, so the ramp does not sweep through
+            // unrelated hues on the way to grey.
+            let powerless: Vec<bool> = comps.iter().map(|c| c[1] < 1e-6).collect();
+            for i in 0..comps.len() {
+                if powerless[i] {
+                    let donor = (i + 1..comps.len())
+                        .find(|j| !powerless[*j])
+                        .or_else(|| (0..i).rev().find(|j| !powerless[*j]));
+                    comps[i][2] = donor.map_or(0.0, |j| comps[j][2]);
+                }
+            }
+        }
+        let premultiply = |c: [f64; 3], a: f64| -> [f64; 4] {
+            if polar {
+                [c[0] * a, c[1] * a, c[2], a]
+            } else {
+                [c[0] * a, c[1] * a, c[2] * a, a]
+            }
+        };
+        // A fully transparent stop reads back as transparent black,
+        // like every other fully transparent pixel of the ramp.
+        let stops: Vec<(f64, [f64; 4])> = stops
+            .into_iter()
+            .map(|(o, c)| (o, if c[3] > 0.0 { c } else { [0.0; 4] }))
+            .collect();
+        let mut segments = Vec::with_capacity(stops.len().saturating_sub(1).max(1));
+        for i in 0..stops.len().saturating_sub(1) {
+            let (o0, s0) = stops[i];
+            let (o1, s1) = stops[i + 1];
+            let c0 = premultiply(comps[i], s0[3]);
+            let mut c1 = premultiply(comps[i + 1], s1[3]);
+            if polar {
+                c1[2] = opts.hue.resolve(c0[2], c1[2]);
+            }
+            segments.push(Segment {
+                o0,
+                o1,
+                c0,
+                c1,
+                s0,
+                s1,
+            });
+        }
+        if segments.is_empty() {
+            // A single stop: one flat segment.
+            let (o, s) = stops[0];
+            let c = premultiply(comps[0], s[3]);
+            segments.push(Segment {
+                o0: o,
+                o1: o,
+                c0: c,
+                c1: c,
+                s0: s,
+                s1: s,
+            });
+        }
+        let rgb_to_xyz = RgbPrimaries::BT709.rgb_to_xyz();
+        let (xyz_to_linear, white) = match space {
+            GradientColorspace::Lab | GradientColorspace::Lch => {
+                let d50 = D50.to_xyz();
+                let adapt = bradford_adaptation(D65.to_xyz(), d50);
+                (mat3_inverse(&mat3_mul(&adapt, &rgb_to_xyz)), d50)
+            }
+            _ => (mat3_inverse(&rgb_to_xyz), D65.to_xyz()),
+        };
+        let opaque = stops.iter().all(|s| s.1[3] >= 1.0);
+        let first = stops[0].1;
+        let outside = [first[0], first[1], first[2], if opaque { 1.0 } else { 0.0 }];
+        Ok(Self {
+            space,
+            spread: opts.spread,
+            segments,
+            xyz_to_linear,
+            white,
+            outside,
+        })
+    }
+
+    /// Interpolation-space components → straight encoded sRGB.
+    #[inline]
+    fn decode(&self, v: [f64; 3]) -> [f64; 3] {
+        let from_xyz = |xyz: [f64; 3]| {
+            let lin = mat3_apply(&self.xyz_to_linear, xyz);
+            [
+                linear_to_srgb(lin[0].clamp(0.0, 1.0)),
+                linear_to_srgb(lin[1].clamp(0.0, 1.0)),
+                linear_to_srgb(lin[2].clamp(0.0, 1.0)),
+            ]
+        };
+        match self.space {
+            GradientColorspace::Srgb => v,
+            GradientColorspace::Linear => [
+                linear_to_srgb(v[0]),
+                linear_to_srgb(v[1]),
+                linear_to_srgb(v[2]),
+            ],
+            GradientColorspace::Oklab => from_xyz(oklab_to_xyz_d65(v)),
+            GradientColorspace::Oklch => from_xyz(oklab_to_xyz_d65(lch_to_lab(v))),
+            GradientColorspace::Lab => from_xyz(lab_to_xyz(v, self.white)),
+            GradientColorspace::Lch => from_xyz(lab_to_xyz(lch_to_lab(v), self.white)),
+        }
+    }
+
+    /// Straight encoded colour at gradient parameter `t`.
+    #[inline]
+    fn at(&self, t: f64) -> [f64; 4] {
+        let t = if t.is_nan() {
             0.0
         } else {
-            f64::INFINITY
-        }
-    };
-
-    for y in 0..h {
-        for x in 0..w {
-            if let Some(b) = bbox
-                && !b.contains(x, y)
-            {
-                img.put(x, y, mixer.outside);
-                continue;
+            match self.spread {
+                GradientSpread::Pad => t.clamp(0.0, 1.0),
+                GradientSpread::Repeat => {
+                    if (0.0..=1.0).contains(&t) {
+                        t
+                    } else {
+                        t - t.floor()
+                    }
+                }
+                GradientSpread::Reflect => {
+                    let m = t - 2.0 * (t / 2.0).floor();
+                    if m > 1.0 { 2.0 - m } else { m }
+                }
             }
-            let nx = norm(x as f64 - cx, rx);
-            let ny = norm(y as f64 - cy, ry);
-            let t = (nx * nx + ny * ny).sqrt();
-            img.put(x, y, mixer.at(t));
-        }
-    }
-    Ok(img)
-}
-
-/// Two-stop colour interpolator (premultiplied alpha, optional
-/// linear-light space, Q16 → 8-bit quantisation).
-struct Mixer {
-    /// Premultiplied components of each stop, `[r, g, b, a]` in `[0, 1]`
-    /// (linear light when `linear`).
-    from: [f64; 4],
-    to: [f64; 4],
-    linear: bool,
-    /// Colour painted outside the bounding box.
-    outside: [u8; 4],
-}
-
-impl Mixer {
-    fn new(opts: &GradientOptions) -> Self {
-        let linear = opts.colorspace == GradientColorspace::Linear;
-        let prep = |c: [u8; 4]| -> [f64; 4] {
-            let a = c[3] as f64 / 255.0;
-            let ch = |v: u8| {
-                let f = v as f64 / 255.0;
-                if linear { srgb_to_linear(f) } else { f }
-            };
-            [ch(c[0]) * a, ch(c[1]) * a, ch(c[2]) * a, a]
         };
-        let opaque = opts.from[3] == 255 && opts.to[3] == 255;
-        let outside = [
-            opts.from[0],
-            opts.from[1],
-            opts.from[2],
-            if opaque { 255 } else { 0 },
-        ];
-        Self {
-            from: prep(opts.from),
-            to: prep(opts.to),
-            linear,
-            outside,
+        let last = self.segments.len() - 1;
+        let mut i = 0;
+        while i < last && t >= self.segments[i].o1 {
+            i += 1;
         }
-    }
-
-    #[inline]
-    fn at(&self, t: f64) -> [u8; 4] {
-        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        let seg = &self.segments[i];
+        let exact_ends = !matches!(
+            self.space,
+            GradientColorspace::Srgb | GradientColorspace::Linear
+        );
+        let u = if t >= seg.o1 {
+            if exact_ends || seg.o1 <= seg.o0 {
+                return seg.s1;
+            }
+            1.0
+        } else if t <= seg.o0 {
+            if exact_ends {
+                return seg.s0;
+            }
+            0.0
+        } else if seg.o0 == 0.0 && seg.o1 == 1.0 {
+            t
+        } else {
+            (t - seg.o0) / (seg.o1 - seg.o0)
+        };
         let mut p = [0f64; 4];
         for (i, v) in p.iter_mut().enumerate() {
-            *v = self.from[i] + (self.to[i] - self.from[i]) * t;
+            *v = seg.c0[i] + (seg.c1[i] - seg.c0[i]) * u;
         }
         let a = p[3];
-        let mut out = [0u8; 4];
-        for i in 0..3 {
-            let v = if a > 0.0 { p[i] / a } else { 0.0 };
-            let v = if self.linear { linear_to_srgb(v) } else { v };
-            out[i] = quantize(v);
-        }
-        out[3] = quantize(a);
-        out
+        let un = |v: f64| if a > 0.0 { v / a } else { 0.0 };
+        let straight = if self.space.is_polar() {
+            [un(p[0]), un(p[1]), p[2]]
+        } else {
+            [un(p[0]), un(p[1]), un(p[2])]
+        };
+        let rgb = if a > 0.0 {
+            self.decode(straight)
+        } else {
+            [0.0; 3]
+        };
+        [rgb[0], rgb[1], rgb[2], a]
     }
 }
 
-/// `[0, 1]` → Q16 → 8-bit, both roundings half-up (the ImageMagick
-/// `-depth 8` export path).
-#[inline]
-fn quantize(v: f64) -> u8 {
-    let q16 = (v.clamp(0.0, 1.0) * 65535.0).round() as u32;
-    ((q16 + 128) / 257) as u8
+/// A gradient as a [`Field`]: geometry + colour ramp + bounding box.
+/// Build with [`GradientOptions::field`].
+#[derive(Clone, Debug)]
+pub struct GradientField {
+    width: u32,
+    height: u32,
+    geometry: Geometry,
+    ramp: ColorRamp,
+    bbox: Option<BoundingBox>,
+}
+
+impl GradientField {
+    /// Gradient parameter `t` of pixel `(x, y)` before the spread
+    /// method is applied (it may lie outside `[0, 1]`).
+    pub fn parameter(&self, x: u32, y: u32) -> f64 {
+        self.geometry.t(x, self.geometry.row_term(y))
+    }
+
+    /// Straight-alpha encoded colour of the ramp at parameter `t`.
+    pub fn color_at(&self, t: f64) -> [f64; 4] {
+        self.ramp.at(t)
+    }
+
+    /// `t` does not depend on `x`.
+    fn constant_along_x(&self) -> bool {
+        match self.geometry {
+            Geometry::Vector { dx, .. } | Geometry::Angle { dx, .. } => dx == 0.0,
+            _ => false,
+        }
+    }
+
+    /// `t` does not depend on `y`.
+    fn constant_along_y(&self) -> bool {
+        match self.geometry {
+            Geometry::Vector { dy, .. } | Geometry::Angle { dy, .. } => dy == 0.0,
+            _ => false,
+        }
+    }
+}
+
+impl Field for GradientField {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn fill_row(&self, y: u32, x0: u32, out: &mut [[f64; 4]]) {
+        let row = self.geometry.row_term(y);
+        match self.bbox {
+            None => {
+                for (i, o) in out.iter_mut().enumerate() {
+                    *o = self.ramp.at(self.geometry.t(x0 + i as u32, row));
+                }
+            }
+            Some(b) => {
+                for (i, o) in out.iter_mut().enumerate() {
+                    let x = x0 + i as u32;
+                    *o = if b.contains(x, y) {
+                        self.ramp.at(self.geometry.t(x, row))
+                    } else {
+                        self.ramp.outside
+                    };
+                }
+            }
+        }
+    }
+
+    fn uniform_row(&self, y: u32) -> Option<[f64; 4]> {
+        if self.bbox.is_none() && self.constant_along_x() {
+            Some(self.ramp.at(self.parameter(0, y)))
+        } else {
+            None
+        }
+    }
+
+    fn rows_repeat(&self) -> bool {
+        self.bbox.is_none() && self.constant_along_y()
+    }
+}
+
+impl GradientOptions {
+    /// The stops as `(offset, straight encoded colour)`, offsets
+    /// resolved: a missing first / last offset is 0 / 1, an offset
+    /// below an earlier one is raised to it, and runs of missing
+    /// offsets are spaced evenly between their neighbours. With no
+    /// explicit stops this is `from` at 0 and `to` at 1.
+    pub fn resolved_stops(&self) -> Result<Vec<(f64, [f64; 4])>> {
+        if self.stops.is_empty() {
+            let c = |c: [u8; 4]| c.map(|v| f64::from(v) / 255.0);
+            return Ok(vec![(0.0, c(self.from)), (1.0, c(self.to))]);
+        }
+        let n = self.stops.len();
+        let mut offs: Vec<Option<f64>> = self.stops.iter().map(|s| s.offset).collect();
+        for o in offs.iter().flatten() {
+            if !o.is_finite() {
+                return Err(Error::invalid("gradient: stop offsets must be finite"));
+            }
+        }
+        if offs[0].is_none() {
+            offs[0] = Some(0.0);
+        }
+        if offs[n - 1].is_none() {
+            offs[n - 1] = Some(if n == 1 { 0.0 } else { 1.0 });
+        }
+        let mut floor = f64::NEG_INFINITY;
+        for o in offs.iter_mut().flatten() {
+            if *o < floor {
+                *o = floor;
+            }
+            floor = *o;
+        }
+        let mut i = 0;
+        while i < n {
+            if offs[i].is_some() {
+                i += 1;
+                continue;
+            }
+            let start = i - 1;
+            let mut end = i;
+            while offs[end].is_none() {
+                end += 1;
+            }
+            let (a, b) = (offs[start].unwrap(), offs[end].unwrap());
+            for (k, slot) in offs[i..end].iter_mut().enumerate() {
+                *slot = Some(a + (b - a) * (k + 1) as f64 / (end - start) as f64);
+            }
+            i = end;
+        }
+        Ok(self
+            .stops
+            .iter()
+            .zip(offs)
+            .map(|(s, o)| (o.unwrap(), s.color))
+            .collect())
+    }
+
+    /// Build the gradient as a [`Field`], ready for
+    /// [`canvas::render`] at any depth.
+    pub fn field(&self, kind: GradientKind) -> Result<GradientField> {
+        let bbox = self.checked_bbox()?;
+        let ramp = ColorRamp::new(self)?;
+        let w = self.width.max(1);
+        let h = self.height.max(1);
+        // Quantise a direction cosine to a 1e-12 grid. This snaps
+        // floating-point dust (cos 90° ≈ 6e-17) to zero, so a cardinal
+        // angle on a one-pixel axis stays degenerate (one colour), and
+        // it makes the result independent of the platform's
+        // trigonometric functions, which may differ in the last bit and
+        // would flip exact-half cases such as t = 5/6 at 45° on 5x3.
+        let snap = |v: f64| (v * 1e12).round() / 1e12;
+        let geometry = match kind {
+            GradientKind::Linear => match self.linear_vector() {
+                Some([x1, y1, x2, y2]) => {
+                    let dx = x2 - x1;
+                    let dy = y2 - y1;
+                    Geometry::Vector {
+                        x1,
+                        y1,
+                        dx,
+                        dy,
+                        len2: dx * dx + dy * dy,
+                    }
+                }
+                None => {
+                    let theta = self.angle.unwrap_or(0.0).to_radians();
+                    let dx = snap(theta.sin());
+                    let dy = snap(-theta.cos());
+                    let r = f64::from(w - 1);
+                    let b = f64::from(h - 1);
+                    let corners = [0.0, r * dx, b * dy, r * dx + b * dy];
+                    let min = corners.iter().cloned().fold(f64::INFINITY, f64::min);
+                    let max = corners.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    Geometry::Angle {
+                        dx,
+                        dy,
+                        min,
+                        range: max - min,
+                    }
+                }
+            },
+            GradientKind::Radial => {
+                let (cx, cy) = self.radial_center();
+                let (rx, ry) = self.radial_radii();
+                let theta = self.angle.unwrap_or(0.0).to_radians();
+                let (cos, sin) = (snap(theta.cos()), snap(theta.sin()));
+                Geometry::Radial {
+                    cx,
+                    cy,
+                    rx,
+                    ry,
+                    cos,
+                    sin,
+                    rotated: sin != 0.0 || cos != 1.0,
+                }
+            }
+            GradientKind::Conic => {
+                let (cx, cy) = self
+                    .center
+                    .unwrap_or((f64::from(w - 1) / 2.0, f64::from(h - 1) / 2.0));
+                let start = self.angle.unwrap_or(0.0) / 360.0;
+                Geometry::Conic {
+                    cx,
+                    cy,
+                    start: start - start.floor(),
+                }
+            }
+        };
+        Ok(GradientField {
+            width: w,
+            height: h,
+            geometry,
+            ramp,
+            bbox,
+        })
+    }
 }
 
 /// sRGB electro-optical transfer (CSS Color 4 §10.2 `lin_sRGB`).
@@ -1444,10 +2243,14 @@ mod tests {
         assert!(format!("{err}").contains("x1,y1,x2,y2"));
         let err = render(&map(&[("radii", "1,2,3")])).unwrap_err();
         assert!(format!("{err}").contains("radii"));
-        let err = render(&map(&[("type", "conic")])).unwrap_err();
-        assert!(format!("{err}").contains("conic"));
-        let err = render(&map(&[("colorspace", "lab")])).unwrap_err();
-        assert!(format!("{err}").contains("lab"));
+        let err = render(&map(&[("type", "spiral")])).unwrap_err();
+        assert!(format!("{err}").contains("spiral"));
+        let err = render(&map(&[("colorspace", "cmyk")])).unwrap_err();
+        assert!(format!("{err}").contains("cmyk"));
+        let err = render(&map(&[("spread", "wrap")])).unwrap_err();
+        assert!(format!("{err}").contains("wrap"));
+        let err = render(&map(&[("stops", "red,nocolour")])).unwrap_err();
+        assert!(format!("{err}").contains("nocolour"));
     }
 
     #[test]
@@ -1463,5 +2266,490 @@ mod tests {
         assert_eq!(greys(&img), vec![0; 5]);
         let img = render_radial(&bw(1, 1)).unwrap();
         assert_eq!(greys(&img), vec![0]);
+    }
+
+    // ── multi-stop, spread, conic, colour spaces, depths ──
+
+    use crate::image::canvas::{Channels, Dither, SampleDepth};
+
+    fn rgb(r: u8, g: u8, b: u8) -> GradientStop {
+        GradientStop::from_rgba8([r, g, b, 255])
+    }
+
+    fn east(w: u32, h: u32) -> GradientOptions {
+        GradientOptions::new(w, h).with_direction(GradientDirection::East)
+    }
+
+    #[test]
+    fn three_stops_are_exact_at_the_stops_and_linear_between() {
+        let opts = east(5, 1).with_stops(vec![rgb(255, 0, 0), rgb(0, 255, 0), rgb(0, 0, 255)]);
+        assert_eq!(
+            opts.resolved_stops()
+                .unwrap()
+                .iter()
+                .map(|s| s.0)
+                .collect::<Vec<_>>(),
+            vec![0.0, 0.5, 1.0]
+        );
+        let img = render_linear(&opts).unwrap();
+        assert_eq!(img.get(0, 0), [255, 0, 0, 255]);
+        assert_eq!(img.get(1, 0), [128, 128, 0, 255]);
+        assert_eq!(img.get(2, 0), [0, 255, 0, 255]);
+        assert_eq!(img.get(3, 0), [0, 128, 128, 255]);
+        assert_eq!(img.get(4, 0), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn stop_offsets_resolve_like_the_documented_fix_up() {
+        let stops = GradientStop::parse_list("red, white 60%, rgb(0,0,255), lime, black 40%, gray")
+            .unwrap();
+        let opts = east(8, 1).with_stops(stops);
+        let offs: Vec<f64> = opts.resolved_stops().unwrap().iter().map(|s| s.0).collect();
+        // 0, 0.6, (0.6 + ⅓·0)…: the 40 % stop is raised to 0.6, so the
+        // two automatic stops before it sit at 0.6 as well.
+        assert_eq!(offs, vec![0.0, 0.6, 0.6, 0.6, 0.6, 1.0]);
+        let stops = GradientStop::parse_list("red;white;blue@0.5;black").unwrap();
+        let offs: Vec<f64> = east(4, 1)
+            .with_stops(stops)
+            .resolved_stops()
+            .unwrap()
+            .iter()
+            .map(|s| s.0)
+            .collect();
+        assert_eq!(offs, vec![0.0, 0.25, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn coincident_stops_make_a_hard_edge() {
+        let stops = GradientStop::parse_list("red 50%, blue 50%").unwrap();
+        let img = render_linear(&east(5, 1).with_stops(stops)).unwrap();
+        // t = 0, ¼ → red; t = ½, ¾, 1 → blue (the later stop wins at
+        // the edge itself).
+        assert_eq!(img.get(0, 0), [255, 0, 0, 255]);
+        assert_eq!(img.get(1, 0), [255, 0, 0, 255]);
+        assert_eq!(img.get(2, 0), [0, 0, 255, 255]);
+        assert_eq!(img.get(4, 0), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn spread_methods_follow_their_closed_forms() {
+        // Vector covers x = 0..=4; the canvas runs on to x = 12.
+        let base = bw(13, 1).with_vector(0.0, 0.0, 4.0, 0.0);
+        let pad = greys(&render_linear(&base).unwrap());
+        assert_eq!(pad[..5], [0, 64, 128, 191, 255]);
+        assert!(pad[5..].iter().all(|v| *v == 255));
+        let rep = greys(&render_linear(&base.clone().with_spread(GradientSpread::Repeat)).unwrap());
+        // t = x/4; t = 1 keeps the end colour, then the ramp restarts.
+        assert_eq!(
+            rep,
+            vec![0, 64, 128, 191, 255, 64, 128, 191, 0, 64, 128, 191, 0]
+        );
+        let refl =
+            greys(&render_linear(&base.clone().with_spread(GradientSpread::Reflect)).unwrap());
+        assert_eq!(
+            refl,
+            vec![0, 64, 128, 191, 255, 191, 128, 64, 0, 64, 128, 191, 255]
+        );
+        // Negative parameters reflect too.
+        let neg = bw(5, 1)
+            .with_vector(4.0, 0.0, 8.0, 0.0)
+            .with_spread(GradientSpread::Reflect);
+        assert_eq!(
+            greys(&render_linear(&neg).unwrap()),
+            vec![255, 191, 128, 64, 0]
+        );
+    }
+
+    #[test]
+    fn turn_fraction_is_exact_on_the_principal_directions_and_tracks_atan2() {
+        assert_eq!(turn_fraction(0.0, 0.0), 0.0);
+        assert_eq!(turn_fraction(3.0, 0.0), 0.0);
+        assert_eq!(turn_fraction(2.0, 2.0), 0.125);
+        assert_eq!(turn_fraction(0.0, 5.0), 0.25);
+        assert_eq!(turn_fraction(-1.5, 1.5), 0.375);
+        assert_eq!(turn_fraction(-7.0, 0.0), 0.5);
+        assert_eq!(turn_fraction(-4.0, -4.0), 0.625);
+        assert_eq!(turn_fraction(0.0, -1.0), 0.75);
+        assert_eq!(turn_fraction(9.0, -9.0), 0.875);
+        let mut state = 0x1234_5678_9ABC_DEF1u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2000.0 - 1000.0
+        };
+        for _ in 0..20_000 {
+            let (x, y) = (next(), next());
+            let want = y.atan2(x) / std::f64::consts::TAU;
+            let want = if want < 0.0 { want + 1.0 } else { want };
+            let got = turn_fraction(x, y);
+            assert!((0.0..1.0).contains(&got));
+            assert!((got - want).abs() < 4e-16, "({x}, {y}): {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn conic_parameter_runs_clockwise_from_north() {
+        let f = bw(5, 5).field(GradientKind::Conic).unwrap();
+        assert_eq!(f.parameter(2, 2), 0.0); // centre
+        assert_eq!(f.parameter(2, 0), 0.0); // North
+        assert_eq!(f.parameter(4, 0), 0.125); // NorthEast
+        assert_eq!(f.parameter(4, 2), 0.25); // East
+        assert_eq!(f.parameter(4, 4), 0.375);
+        assert_eq!(f.parameter(2, 4), 0.5); // South
+        assert_eq!(f.parameter(0, 4), 0.625);
+        assert_eq!(f.parameter(0, 2), 0.75); // West
+        assert_eq!(f.parameter(0, 0), 0.875);
+        // A start angle of 90° puts t = 0 on East.
+        let f = bw(5, 5)
+            .with_angle(90.0)
+            .field(GradientKind::Conic)
+            .unwrap();
+        assert_eq!(f.parameter(4, 2), 0.0);
+        assert_eq!(f.parameter(2, 4), 0.25);
+        assert_eq!(f.parameter(2, 0), 0.75);
+        // An explicit centre moves the apex.
+        let f = bw(5, 5)
+            .with_center(0.0, 0.0)
+            .field(GradientKind::Conic)
+            .unwrap();
+        assert_eq!(f.parameter(0, 0), 0.0);
+        assert_eq!(f.parameter(3, 0), 0.25);
+        assert_eq!(f.parameter(3, 3), 0.375);
+        assert_eq!(f.parameter(0, 2), 0.5);
+    }
+
+    #[test]
+    fn conic_image_has_the_stop_colours_on_the_axes() {
+        let stops = GradientStop::parse_list("red, yellow 25%, lime 50%, blue 75%, red").unwrap();
+        let img = render_conic(&GradientOptions::new(9, 9).with_stops(stops)).unwrap();
+        assert_eq!(img.get(4, 0), [255, 0, 0, 255]);
+        assert_eq!(img.get(8, 4), [255, 255, 0, 255]);
+        assert_eq!(img.get(4, 8), [0, 255, 0, 255]);
+        assert_eq!(img.get(0, 4), [0, 0, 255, 255]);
+        // Half-way between East and South: yellow → lime midpoint.
+        assert_eq!(img.get(8, 8), [128, 255, 0, 255]);
+        // Through the URI.
+        let uri = render(&map(&[
+            ("type", "conic"),
+            ("stops", "red, yellow 25%, lime 50%, blue 75%, red"),
+            ("w", "9"),
+            ("h", "9"),
+        ]))
+        .unwrap();
+        assert_eq!(uri.pixels, img.pixels);
+    }
+
+    #[test]
+    fn radial_angle_rotates_the_ellipse_clockwise() {
+        // Rows 2..=4 of `magick -size 9x9 -define gradient:radii=4,2
+        // -define gradient:angle=30 radial-gradient:white-black`.
+        let img = render_radial(
+            &GradientOptions::new(9, 9)
+                .with_radii(4.0, Some(2.0))
+                .with_angle(30.0),
+        )
+        .unwrap();
+        let rows: [[u8; 9]; 3] = [
+            [0x00, 0x18, 0x39, 0x3a, 0x19, 0x00, 0x00, 0x00, 0x00],
+            [0x00, 0x2a, 0x70, 0x9c, 0x8c, 0x4f, 0x04, 0x00, 0x00],
+            [0x00, 0x02, 0x56, 0xab, 0xff, 0xab, 0x56, 0x02, 0x00],
+        ];
+        for (r, row) in rows.iter().enumerate() {
+            for (x, want) in row.iter().enumerate() {
+                let got = img.get(x as u32, r as u32 + 2)[0];
+                assert!(
+                    (i16::from(got) - i16::from(*want)).abs() <= 1,
+                    "({x}, {}): {got} vs {want}",
+                    r + 2
+                );
+            }
+        }
+        // A quarter turn is the same as swapping the radii.
+        let a = render_radial(
+            &GradientOptions::new(9, 7)
+                .with_radii(4.0, Some(2.0))
+                .with_angle(90.0),
+        )
+        .unwrap();
+        let b = render_radial(&GradientOptions::new(9, 7).with_radii(2.0, Some(4.0))).unwrap();
+        assert_eq!(a.pixels, b.pixels);
+    }
+
+    #[test]
+    fn radial_default_is_mirror_symmetric() {
+        let stops = GradientStop::parse_list("white, red 30%, navy").unwrap();
+        let img = render_radial(
+            &GradientOptions::new(12, 9)
+                .with_stops(stops)
+                .with_extent(GradientExtent::Ellipse),
+        )
+        .unwrap();
+        for y in 0..9 {
+            for x in 0..12 {
+                assert_eq!(img.get(x, y), img.get(11 - x, y));
+                assert_eq!(img.get(x, y), img.get(x, 8 - y));
+            }
+        }
+    }
+
+    #[test]
+    fn opposite_directions_are_mirror_images() {
+        let a = render_linear(&bw(17, 3).with_direction(GradientDirection::East)).unwrap();
+        let b = render_linear(&bw(17, 3).with_direction(GradientDirection::West)).unwrap();
+        for y in 0..3 {
+            for x in 0..17 {
+                assert_eq!(a.get(x, y), b.get(16 - x, y));
+            }
+        }
+    }
+
+    fn midpoint(space: GradientColorspace) -> [u8; 4] {
+        render_linear(
+            &east(3, 1)
+                .with_colors([0, 0, 0, 255], [255, 255, 255, 255])
+                .with_colorspace(space),
+        )
+        .unwrap()
+        .get(1, 0)
+    }
+
+    #[test]
+    fn black_to_white_midpoints_per_colour_space() {
+        assert_eq!(midpoint(GradientColorspace::Srgb), [128, 128, 128, 255]);
+        // Linear light ½ encodes to 0.7354 → 188.
+        assert_eq!(midpoint(GradientColorspace::Linear), [188, 188, 188, 255]);
+        // Oklab L = ½ is linear luminance ⅛, encoded 0.3886 → 99.
+        assert_eq!(midpoint(GradientColorspace::Oklab), [99, 99, 99, 255]);
+        assert_eq!(midpoint(GradientColorspace::Oklch), [99, 99, 99, 255]);
+        // CIELAB L* = 50 is luminance 0.1842, encoded 0.4663 → 119.
+        assert_eq!(midpoint(GradientColorspace::Lab), [119, 119, 119, 255]);
+        assert_eq!(midpoint(GradientColorspace::Lch), [119, 119, 119, 255]);
+    }
+
+    #[test]
+    fn perceptual_spaces_return_the_stop_colours_exactly() {
+        for space in [
+            GradientColorspace::Oklab,
+            GradientColorspace::Oklch,
+            GradientColorspace::Lab,
+            GradientColorspace::Lch,
+        ] {
+            let opts = east(5, 1)
+                .with_stops(vec![rgb(200, 30, 60), rgb(10, 180, 90), rgb(40, 50, 250)])
+                .with_colorspace(space);
+            let f = opts.field(GradientKind::Linear).unwrap();
+            assert_eq!(
+                f.color_at(0.0),
+                [200.0 / 255.0, 30.0 / 255.0, 60.0 / 255.0, 1.0]
+            );
+            assert_eq!(
+                f.color_at(0.5),
+                [10.0 / 255.0, 180.0 / 255.0, 90.0 / 255.0, 1.0]
+            );
+            assert_eq!(
+                f.color_at(1.0),
+                [40.0 / 255.0, 50.0 / 255.0, 250.0 / 255.0, 1.0]
+            );
+            // Approaching a stop converges on it.
+            let near = f.color_at(0.5 - 1e-9);
+            for (a, b) in near.iter().zip(f.color_at(0.5)) {
+                assert!((a - b).abs() < 1e-6, "{space:?}");
+            }
+            for t in [0.1, 0.3, 0.7, 0.9] {
+                for v in f.color_at(t) {
+                    assert!((0.0..=1.0).contains(&v));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn polar_hue_arcs_differ_and_grey_borrows_its_neighbours_hue() {
+        let ramp = |arc: HueArc| {
+            east(3, 1)
+                .with_colors([255, 0, 0, 255], [0, 0, 255, 255])
+                .with_colorspace(GradientColorspace::Oklch)
+                .with_hue_arc(arc)
+                .field(GradientKind::Linear)
+                .unwrap()
+                .color_at(0.5)
+        };
+        // Red (≈29°) to blue (≈264°): the short way passes magenta
+        // (green lowest), the long way passes green.
+        let short = ramp(HueArc::Shorter);
+        assert!(short[1] < short[0] && short[1] < short[2], "{short:?}");
+        let long = ramp(HueArc::Longer);
+        assert!(long[1] > long[0] && long[1] > long[2], "{long:?}");
+        assert_eq!(ramp(HueArc::Decreasing), short);
+        assert_eq!(ramp(HueArc::Increasing), long);
+        // White → red in a polar space fades straight to red: green and
+        // blue stay equal-ish and below red (no detour through other
+        // hues).
+        let f = east(3, 1)
+            .with_colors([255, 255, 255, 255], [255, 0, 0, 255])
+            .with_colorspace(GradientColorspace::Oklch)
+            .field(GradientKind::Linear)
+            .unwrap();
+        let mid = f.color_at(0.5);
+        assert!(mid[0] > mid[1] && mid[0] > mid[2]);
+        assert!((mid[1] - mid[2]).abs() < 0.08, "{mid:?}");
+    }
+
+    #[test]
+    fn sixteen_bit_ramp_hits_every_level_and_eight_bit_is_its_rounding() {
+        let opts = east(65536, 1).with_colors([0, 0, 0, 255], [255, 255, 255, 255]);
+        let f = opts.field(GradientKind::Linear).unwrap();
+        let cfg = RenderConfig::new().with_channels(Channels::Gray);
+        let deep = canvas::render(&f, &cfg.with_depth(SampleDepth::U16));
+        let deep = deep.as_u16().unwrap();
+        for (x, v) in deep.iter().enumerate() {
+            assert_eq!(usize::from(*v), x);
+        }
+        let low = canvas::render(&f, &cfg);
+        for (a, b) in low.as_u8().unwrap().iter().zip(deep) {
+            assert_eq!(u32::from(*a), (u32::from(*b) + 128) / 257);
+        }
+        let float = canvas::render(&f, &cfg.with_depth(SampleDepth::F32));
+        for (x, v) in float.as_f32().unwrap().iter().enumerate() {
+            assert_eq!(*v, (x as f64 / 65535.0) as f32);
+        }
+    }
+
+    #[test]
+    fn eight_bit_gradient_equals_the_rounded_float_gradient() {
+        let stops = GradientStop::parse_list("#102030, gold 40%, rgba(0,128,255,0.5)").unwrap();
+        for kind in [
+            GradientKind::Linear,
+            GradientKind::Radial,
+            GradientKind::Conic,
+        ] {
+            let f = GradientOptions::new(61, 47)
+                .with_stops(stops.clone())
+                .with_angle(33.0)
+                .field(kind)
+                .unwrap();
+            let low = canvas::render(&f, &RenderConfig::new());
+            let float = canvas::render(&f, &RenderConfig::new().with_depth(SampleDepth::F32));
+            let mut checked = 0;
+            for (a, v) in low.as_u8().unwrap().iter().zip(float.as_f32().unwrap()) {
+                let scaled = f64::from(*v) * 255.0;
+                // Skip samples within f32 rounding of a tie.
+                if (scaled - scaled.floor() - 0.5).abs() > 1e-4 {
+                    assert_eq!(f64::from(*a), scaled.round(), "{kind:?}");
+                    checked += 1;
+                }
+            }
+            assert!(checked > 61 * 47 * 4 * 9 / 10);
+        }
+    }
+
+    #[test]
+    fn row_shortcuts_match_per_pixel_evaluation() {
+        let stops = GradientStop::parse_list("red, white 30%, blue").unwrap();
+        for dir in [
+            GradientDirection::South,
+            GradientDirection::North,
+            GradientDirection::East,
+            GradientDirection::West,
+            GradientDirection::SouthEast,
+        ] {
+            let f = GradientOptions::new(19, 11)
+                .with_stops(stops.clone())
+                .with_direction(dir)
+                .with_colorspace(GradientColorspace::Linear)
+                .field(GradientKind::Linear)
+                .unwrap();
+            let img = canvas::render(&f, &RenderConfig::new().with_depth(SampleDepth::F32));
+            for y in 0..11 {
+                for x in 0..19 {
+                    let want = f.color_at(f.parameter(x, y));
+                    let got = img.pixel(x, y);
+                    for c in 0..4 {
+                        assert_eq!(got[c], f64::from(want[c] as f32), "{dir:?} ({x}, {y})");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn threads_and_bands_do_not_change_any_gradient() {
+        let stops = GradientStop::parse_list("red, white 30%, blue").unwrap();
+        for kind in [
+            GradientKind::Linear,
+            GradientKind::Radial,
+            GradientKind::Conic,
+        ] {
+            for angle in [0.0, 90.0, 37.0] {
+                let f = GradientOptions::new(33, 29)
+                    .with_stops(stops.clone())
+                    .with_angle(angle)
+                    .with_spread(GradientSpread::Reflect)
+                    .field(kind)
+                    .unwrap();
+                for depth in [SampleDepth::U8, SampleDepth::U16, SampleDepth::F32] {
+                    let cfg = RenderConfig::new()
+                        .with_depth(depth)
+                        .with_dither(Dither::Ordered);
+                    let serial = canvas::render(&f, &cfg);
+                    assert_eq!(serial, canvas::render(&f, &cfg.with_threads(4)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dithered_ramp_keeps_the_column_means() {
+        // A 0 → 4/255 ramp over 256 columns: undithered it is five flat
+        // bands; dithered, each column's mean follows the ramp.
+        let f = east(256, 64)
+            .with_colors([0, 0, 0, 255], [4, 4, 4, 255])
+            .field(GradientKind::Linear)
+            .unwrap();
+        let cfg = RenderConfig::new().with_channels(Channels::Gray);
+        for dither in [Dither::Ordered, Dither::Noise] {
+            let img = canvas::render(&f, &cfg.with_dither(dither));
+            let v = img.as_u8().unwrap();
+            for x in (0..256).step_by(8) {
+                // Mean over an 8-wide strip, all 64 rows.
+                let mut sum = 0.0;
+                for y in 0..64 {
+                    for dx in 0..8 {
+                        sum += f64::from(v[y * 256 + x + dx]);
+                    }
+                }
+                let want = (x as f64 + 3.5) / 255.0 * 4.0;
+                assert!((sum / 512.0 - want).abs() < 0.08, "{dither:?} x={x}");
+            }
+        }
+    }
+
+    #[test]
+    fn uri_keys_select_depth_layout_and_stops() {
+        let img = render_image(&map(&[
+            ("stops", "black,white"),
+            ("direction", "East"),
+            ("w", "3"),
+            ("h", "1"),
+            ("depth", "16"),
+            ("channels", "gray"),
+        ]))
+        .unwrap();
+        assert_eq!(img.as_u16().unwrap(), &[0, 32768, 65535]);
+        let img = render_image(&map(&[
+            ("from", "black"),
+            ("to", "white"),
+            ("direction", "East"),
+            ("w", "3"),
+            ("h", "1"),
+            ("depth", "float"),
+            ("channels", "rgb"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            img.as_f32().unwrap(),
+            &[0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0]
+        );
     }
 }

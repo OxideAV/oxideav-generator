@@ -17,9 +17,7 @@ use serde_json::Value;
 
 use crate::audio::f32_sample_to_i16;
 use crate::audio::synth as audio_synth;
-use crate::image::{
-    Rgba8Image, fractal, gradient, grating, hald, noise, pattern, plasma, ramp, xc,
-};
+use crate::image::Rgba8Image;
 use crate::video::{
     colorwheel, fractal_zoom, gradient_animate, movingbox, scroll, smptebars, snow, testsrc,
     zoneplate,
@@ -38,23 +36,23 @@ use crate::video::{
 pub fn register_filters(ctx: &mut RuntimeContext) {
     ctx.filters
         .register("audio.synth", Box::new(make_audio_synth));
-    ctx.filters.register("image.xc", Box::new(make_image_xc));
+    ctx.filters.register("image.xc", Box::new(make_image("xc")));
     ctx.filters
-        .register("image.gradient", Box::new(make_image_gradient));
+        .register("image.gradient", Box::new(make_image("gradient")));
     ctx.filters
-        .register("image.pattern", Box::new(make_image_pattern));
+        .register("image.pattern", Box::new(make_image("pattern")));
     ctx.filters
-        .register("image.grating", Box::new(make_image_grating));
+        .register("image.grating", Box::new(make_image("grating")));
     ctx.filters
-        .register("image.fractal", Box::new(make_image_fractal));
+        .register("image.fractal", Box::new(make_image("fractal")));
     ctx.filters
-        .register("image.plasma", Box::new(make_image_plasma));
+        .register("image.plasma", Box::new(make_image("plasma")));
     ctx.filters
-        .register("image.noise", Box::new(make_image_noise));
+        .register("image.noise", Box::new(make_image("noise")));
     ctx.filters
-        .register("image.ramp", Box::new(make_image_ramp));
+        .register("image.ramp", Box::new(make_image("ramp")));
     ctx.filters
-        .register("image.hald", Box::new(make_image_hald));
+        .register("image.hald", Box::new(make_image("hald")));
     ctx.filters
         .register("video.testsrc", Box::new(make_video_testsrc));
     ctx.filters
@@ -159,46 +157,30 @@ impl StreamFilter for AudioSynthFilter {
 // Images (single still frame each)
 // ---------------------------------------------------------------------------
 
-fn make_image_xc(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(xc::render(&params_to_query(params))?)
-}
-fn make_image_gradient(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(gradient::render(&params_to_query(params))?)
-}
-fn make_image_pattern(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(pattern::render(&params_to_query(params))?)
-}
-fn make_image_grating(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(grating::render(&params_to_query(params))?)
-}
-fn make_image_fractal(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(fractal::render(&params_to_query(params))?)
-}
-fn make_image_plasma(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(plasma::render(&params_to_query(params))?)
-}
-fn make_image_noise(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(noise::render(&params_to_query(params))?)
-}
-fn make_image_ramp(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(ramp::render(&params_to_query(params))?)
-}
-fn make_image_hald(params: &Value, _inputs: &[PortSpec]) -> Result<Box<dyn StreamFilter>> {
-    image_filter(hald::render(&params_to_query(params))?)
-}
-
-fn image_filter(img: Rgba8Image) -> Result<Box<dyn StreamFilter>> {
-    let port = PortSpec::video(
-        "video",
-        img.width,
-        img.height,
-        PixelFormat::Rgba,
-        TimeBase::new(1, 1),
-    );
-    Ok(Box::new(SingleFrameFilter {
-        out_port: [port],
-        frame: Some(rgba_image_to_video_frame(img, 0)),
-    }))
+/// Factory for the still-image generator `kind`: the frame is rendered
+/// by [`crate::image::render_still`], so `depth` / `channels` /
+/// `dither` / `threads` parameters shape the output like they do on the
+/// URI path.
+fn make_image(
+    kind: &'static str,
+) -> impl Fn(&Value, &[PortSpec]) -> Result<Box<dyn StreamFilter>> + Send + Sync + 'static {
+    move |params: &Value, _inputs: &[PortSpec]| {
+        let img = crate::image::render_still(kind, &params_to_query(params))
+            .expect("registered kinds are still-image generators")?;
+        let format = crate::image::frame_format(&img)?;
+        let port = PortSpec::video("video", img.width, img.height, format, TimeBase::new(1, 1));
+        let frame = VideoFrame {
+            pts: Some(0),
+            planes: vec![VideoPlane {
+                stride: img.stride(),
+                data: img.to_le_bytes(),
+            }],
+        };
+        Ok(Box::new(SingleFrameFilter {
+            out_port: [port],
+            frame: Some(frame),
+        }) as Box<dyn StreamFilter>)
+    }
 }
 
 struct SingleFrameFilter {
@@ -379,7 +361,7 @@ mod tests {
     #[test]
     fn image_xc_filter_emits_one_video_frame() {
         let params = serde_json::json!({"color": "red", "w": 4, "h": 4});
-        let mut filter = make_image_xc(&params, &[]).unwrap();
+        let mut filter = make_image("xc")(&params, &[]).unwrap();
         let mut ctx = CollectCtx { frames: vec![] };
         filter.flush(&mut ctx).unwrap();
         assert_eq!(ctx.frames.len(), 1);
