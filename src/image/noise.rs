@@ -400,12 +400,14 @@ impl NoiseField {
         let mut amp = 1.0f32;
         let mut freq = base_freq;
         let mut max_total = 0.0f32;
-        for octave in 0..octaves as usize {
+        // One column table per octave (`columns.len() == octaves`).
+        debug_assert_eq!(self.columns.len(), octaves as usize);
+        for octave_columns in &self.columns {
             let p = (y as f32) * freq;
             let yi = p.floor() as i32;
             let yf = p - p.floor();
             let v = fade(yf);
-            let cols = &self.columns[octave][x0 as usize..x0 as usize + out.len()];
+            let cols = &octave_columns[x0 as usize..x0 as usize + out.len()];
             let corner = |column: u8, dy: i32| perm[((column as i32 + yi + dy) & 0xFF) as usize];
             match mode {
                 NoiseMode::Perlin => {
