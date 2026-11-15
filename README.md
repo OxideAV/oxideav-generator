@@ -380,35 +380,32 @@ frame unless noted:
 `cargo bench --bench mpps` renders 1920 × 1080 stills and prints
 megapixels per second (`-- stages` prints a per-stage breakdown). The
 table compares the 0.1.6 release with this tree: both built standalone
-with the default bench profile, the two binaries run alternately seven
+with the default bench profile, the two binaries run alternately five
 times, medians of seven renders per run, 8-bit RGBA, **one thread**.
 The machine (Apple silicon) was heavily shared while measuring (load
-average about 50), so the absolute rates are pessimistic; the ratios
-are what the table is for. Output is byte-identical to 0.1.6 for every
-row (`tests/pinned_bytes.rs`).
+average about 50), so the absolute rates are pessimistic and ratios
+within about ±15 % of 1 are noise. Output is byte-identical to 0.1.6
+for every row (`tests/pinned_bytes.rs`).
 
 | Still (serial, 8-bit RGBA)         | 0.1.6 MP/s | now MP/s | ratio |
 | ---------------------------------- | ---------: | -------: | ----: |
-| solid colour                       |      14309 |    20447 |  1.4× |
-| checkerboard                       |       1361 |     2582 |  1.9× |
-| linear gradient, South             |        159 |     9569 |   60× |
-| linear gradient, East              |        139 |     6149 |   44× |
-| linear gradient, angle = 30°       |        138 |      291 |  2.1× |
-| … linear-light interpolation       |       16.7 |     56.3 |  3.4× |
-| radial gradient                    |       69.0 |      190 |  2.8× |
-| … linear-light interpolation       |       16.8 |     29.2 |  1.7× |
-| plasma (palette)                   |       90.7 |      116 |  1.3× |
-| plasma (two colours)               |       23.5 |     39.4 |  1.7× |
-| plasma (fractal)                   |       30.3 |     27.6 |  0.9× |
-| Perlin noise, 4 octaves            |       16.4 |     22.2 |  1.4× |
-| simplex noise, 4 octaves           |       10.8 |      9.0 |  0.8× |
-| value noise, 4 octaves             |       24.5 |     38.7 |  1.6× |
-| Worley noise                       |       26.9 |     40.6 |  1.5× |
+| solid colour                       |      15961 |    20832 |  1.3× |
+| checkerboard                       |       1377 |     2661 |  1.9× |
+| linear gradient, South             |        177 |     9648 |   55× |
+| linear gradient, East              |        177 |     6189 |   35× |
+| linear gradient, angle = 30°       |        177 |      325 |  1.8× |
+| … linear-light interpolation       |       28.1 |      110 |  3.9× |
+| radial gradient                    |        111 |      255 |  2.3× |
+| … linear-light interpolation       |       27.3 |     81.4 |  3.0× |
+| plasma (palette)                   |        162 |      187 |  1.2× |
+| plasma (two colours)               |       38.1 |     52.4 |  1.4× |
+| plasma (fractal)                   |       49.9 |     51.8 |  1.0× |
+| Perlin noise, 4 octaves            |       27.9 |     34.2 |  1.2× |
+| simplex noise, 4 octaves           |       17.7 |     16.8 |  1.0× |
+| value noise, 4 octaves             |       42.6 |     64.7 |  1.5× |
+| Worley noise                       |       43.1 |     67.9 |  1.6× |
 
-The two rows below 1× sit inside the run-to-run spread on this
-machine (0.83–1.02 and 0.91–1.23 across sessions); neither path lost
-an operation. A quieter focused run of the angled linear gradient gave
-159 → 291 MP/s (1.8×), and of the radial gradient 147 → 234 (1.6×).
+Simplex noise is not separable and was left as it is.
 
 Where the time went, and what changed (ns per pixel before the work,
 from `-- stages`): an angled sRGB gradient spent 1.0 on the gradient
@@ -436,11 +433,11 @@ sums.
   reach the canvas** (the rest only advances the random sequence), and
   the three channel fields run side by side under a thread budget.
 
-New generators, same conditions: 16-bit and float angled gradients 339
-and 472 MP/s, five-stop gradient 82, Oklab 21, conic 24, bricks / dots
-3600, composite chart 376, uniform-range noise 122, Gaussian 10,
-Poisson 14. With `threads=4`: angled gradient 1083 MP/s, conic 207,
-Gaussian noise 86, Perlin noise 162.
+New generators, same run: 16-bit and float angled gradients 345 and
+509 MP/s, five-stop gradient 126, Oklab 36, OkLCh 27, conic 52, bricks
+/ dots 3800, composite chart 377, zone plate 67, uniform-range noise
+186, Gaussian 19, Poisson 29. With `threads=4`: angled gradient 1214
+MP/s, conic 258, Gaussian noise 89, Perlin noise 194.
 
 ## CSS colour parser
 
